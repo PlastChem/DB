@@ -1,0 +1,2688 @@
+---
+title: "POLYMERS"
+author: "Laura"
+date: "2023-08-29"
+output: html_document
+---
+
+In this R document you will find:
+1. Work with FCCmigex 
+1.1 Distribute the data in columns - Summarize 1/0 per polymer type in relation with extraction, migration_food, migration_food_simulants + counting
+1.2 Homogenize terms accordingly to PlastChem project
+1.3 Create new columns per extraction/migration
+1.4 Create new columns per each polymer type
+1.5 Check CAS inconsistencies and manually correct
+
+2. Work with Litchem
+2.1 Distribute the data in columns - Summarize 1/0 per polymer type in relation with extraction, leaching 
+2.2 Homogenize terms accordingly to PlastChem project
+2.3 Create new columns per extraction/migration
+2.4 Create new columns per each polymer type
+2.5 Check CAS inconsistencies and manually correct
+
+3. PlasticMAP
+
+4. Merge the 3 dbs in one with two grades of confidence level: (1) LitChem and FCCmigex; (2) PlasticMAP
+
+5. Merge the polymer db with hazard db
+
+#LIBRARIES
+```{r}
+library(eulerr)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(stringr)
+library(base)
+library(sna)
+library(BioCircos)
+```
+
+##1.FCCMIGEX
+#1.1 Create new columns from the original file - I create 5 files with the different additions. Take the last one: 
+```{r}
+FCCmigex = read.csv (file.choose(),sep=",") #file: FCCmigex_06-27-2023_updated.csv 
+View(FCCmigex)
+
+# Remove spaces if there are some in CAS column
+FCCmigex$casId_final = lapply(FCCmigex$casId_final, gsub, pattern=" ", replacement="")
+
+# Remove " ' " if there are some in CAS column (because we don't have it for all)
+FCCmigex$casId_final = lapply(FCCmigex$casId_final, gsub, pattern="'", replacement="")
+
+# We can remove the rows without any CAS number
+which(FCCmigex$casId_final=="") # We have 1348 data without any CAS (as expected when you look at the Excel file)
+FCCmigex = FCCmigex[-which(FCCmigex$casId_final==""), ]#the - before which -> remove
+nrow(FCCmigex)
+
+# Add again " ' " in CAS column to have it for all
+FCCmigex$casId_final = paste("'", FCCmigex$casId_final, sep="")
+nrow(FCCmigex)
+
+### FILE 1: Split columns
+## Create a new column with data from "fcmMain" and "experiment" - interstep to make the process easier
+# Change name "extraction" by "Extraction" to have exactly the same name for a same experiment
+FCCmigex$experiment[which(FCCmigex$experiment=="extraction")] = "Extraction"
+
+# Create a new column in which we have the information from both "fcmMain" and "experiment" columns
+for (i in 1:nrow(FCCmigex)){
+  FCCmigex$fcmMain_experiment[i] = paste(FCCmigex$fcmMain[i],"_",FCCmigex$experiment[i])
+}
+
+### Create new columns for each case
+#We create a new column for each possible association fcmMain/experiment.As we have 13 fcmMain and 3 experiments, we should create 39 new columns. > We have 38 columns because there is no data from migration into food for PLA (once the rows without CAS are removed)
+# Create a list with all column names we have to add (alphabetic order)
+list_columns_to_add = sort(unique(FCCmigex$fcmMain_experiment), decreasing=FALSE)
+
+for (i in 1:length(list_columns_to_add)){ # for each element of the list
+  # Create a new column
+  FCCmigex$New_column = NA
+  # Rename the new column with the name in the list
+  colnames(FCCmigex)[colnames(FCCmigex)=="New_column"] = list_columns_to_add[i]
+}
+
+# Fill in the columns
+for (i in 1:length(colnames(FCCmigex))){ # for each columns of our dataframe
+  for (j in 1:nrow(FCCmigex)){ # for each row of our dataframe
+    # If the name of the column is the same as the value "fcmMain_experiment" in this row, the value for this row and this column is what we find in the column "detected"
+    if (colnames(FCCmigex)[i]==FCCmigex$fcmMain_experiment[j]){
+      FCCmigex[j,i] = FCCmigex$detected[j]
+    }
+    else{
+      FCCmigex[j,i] = FCCmigex[j,i]
+    }
+  }
+}
+View(FCCmigex)
+
+### FILE 2: Remove duplicates CAS (merge rows in a list of yes, no, unknown for each CAS)
+# Take every value of each row with the same CAS number and put in in 1 row
+FCCmigex_curated = FCCmigex %>% group_by(casId_final) %>% summarise_all(list(~toString(na.omit(.))))
+# Remove columns which are not relevant (we would have a list of information without any meaning > it's better to go in the file "FCCmigex_split.csv" to have more information)
+FCCmigex_curated = FCCmigex_curated[,-which(names(FCCmigex_curated) %in% c("fccMain","fccSynonym","fca","fcmMain","fcmFocus","experiment","detected","sourceTitle","commonName","commonSyn","materialGroup","publication.year","fcmContent","analysis","Author","periodical.name...user.abbreviation.2","DOI","Web.URL","fcmMain_experiment"))]
+
+View(FCCmigex_curated)
+
+### FILE 3: COUNT of yes, no, unknown for each CAS
+# Copy the previous dataframe in a new one
+FCCmigex_curated_count = FCCmigex_curated
+
+for (i in 1:nrow(FCCmigex_curated_count)){ # for every number of row
+  for (j in 2:ncol(FCCmigex_curated_count)){ # for every number of column
+    # Create a vector of yes / no / unclear with the information we have for row i, column j
+    List_yes_no = as.vector(str_split_fixed(FCCmigex_curated_count[i,j], pattern = ", ", n = 50))
+    # Count how many yes, no and unclear we have in the vector
+    n_yes = length(List_yes_no[List_yes_no=="Yes"])
+    n_no = length(List_yes_no[List_yes_no=="No"])
+    n_unclear = length(List_yes_no[List_yes_no=="Unclear/unknown"])
+    # Delete previous value in row i column j
+    FCCmigex_curated_count[i,j] = ""
+    # Add the new value in row i column j
+    if (n_yes!=0){ # if there is at list 1 yes, we add how many yes there are
+      FCCmigex_curated_count[i,j] = paste(FCCmigex_curated_count[i,j],n_yes,"Yes")
+    }
+    if (n_no!=0){ # if there is at list 1 no, we add how many no there are
+      FCCmigex_curated_count[i,j] = paste(FCCmigex_curated_count[i,j],n_no,"No")
+    }
+    if (n_unclear!=0){ # if there is at list 1 unclear, we add how many unclear there are
+      FCCmigex_curated_count[i,j] = paste(FCCmigex_curated_count[i,j],n_unclear,"Unclear/unknown")
+    }
+  }
+}
+View(FCCmigex_curated_count)
+
+### FILE 4: SUMMARY
+# Create a new empty dataframe with same CAS and same columns
+FCCmigex_curated_summary = FCCmigex_curated_count[,"casId_final"]
+for (j in colnames(FCCmigex_curated_count)[2:39]){
+  FCCmigex_curated_summary$New_column = 0
+  colnames(FCCmigex_curated_summary)[colnames(FCCmigex_curated_summary) == 'New_column'] = j
+}
+
+# Fill in the columns with correct values
+for (i in 1:nrow(FCCmigex_curated_count)){ # for every number of row
+  for (j in 2:ncol(FCCmigex_curated_count)){ # for every number of column
+    # if there is at least 1 yes, the value is 1
+    if (grepl("Yes",FCCmigex_curated_count[i,j])){
+      FCCmigex_curated_summary[i,j] = 1
+    }
+    # if there is no "Yes" and at least 1 "No", the value is 0
+    else if (grepl("No",FCCmigex_curated_count[i,j])){
+      FCCmigex_curated_summary[i,j] = 0
+    }
+    # if there is at least 1 unknown and no "Yes" and no "No", the value is a -1
+    else if (grepl("Unclear/unknown",FCCmigex_curated_count[i,j])){
+      FCCmigex_curated_summary[i,j] = 0.5
+    }
+    else{
+      FCCmigex_curated_summary[i,j] = NA
+    }
+  }
+}
+View(FCCmigex_curated_summary)
+
+###FILE 5:Create a file containing all Y and N per each chemical and experiment type to calculate the confidence level
+counting<- FCCmigex %>% group_by(casId_final, experiment, fcmMain, detected) %>% 
+  tally()
+count_Y<- filter(counting, detected== "Yes")
+count_N<-filter(counting, detected == "No")
+counting_final<-merge(count_Y, count_N, by.x= (c("casId_final", "experiment","fcmMain")), 
+              by.y=(c("casId_final", "experiment","fcmMain")), all= T)
+
+View(counting_final)
+
+## Export data as csv
+#write.csv(FCCmigex, "FCCmigex_split.csv", row.names=FALSE)
+#write.csv(FCCmigex_curated, "FCCmigex_split_and_curated.csv", row.names=FALSE)
+#write.csv(FCCmigex_curated_count, "FCCmigex_split_and_curated_count.csv", row.names=FALSE)
+write.csv(FCCmigex_curated_summary, "FCCmigex_split_and_curated_summary.csv", row.names=FALSE)
+write.csv(counting_final, "FCCmigex_counting.csv",row.names=FALSE)
+```
+
+#1.2 Homogenize terms of FCCmigex 
+```{r}
+DataFCCmigex = read.csv (file.choose(),sep=",") #file: FCCmigex_split_and_curated_summary.csv 
+View(DataFCCmigex) 
+names(DataFCCmigex)
+
+DataFCCmigex = FCCmigex_curated_summary
+
+#curate names
+DataFCCmigex_2 <-rename(DataFCCmigex, Melamine_Extraction = Melamine._.Extraction, 
+                        Melamine_Migration_food = Melamine._.Migration.into.Food, 
+                        Melamine_Migration_food_simulants = Melamine._.Migration.into.Food.Simulants, 
+                        Multilayer_Extraction = Multilayer.plastic._.Extraction, 
+                        Multilayer_Migration_food = Multilayer.plastic._.Migration.into.Food, 
+                        Multilayer_Migration_food_simulants = Multilayer.plastic._.Migration.into.Food.Simulants, 
+                        PA_Extraction = PA._.Extraction, 
+                        PA_Migration_food = PA._.Migration.into.Food, 
+                        PA_Migration_food_simulants = PA._.Migration.into.Food.Simulants, 
+                        PC_Extraction = PC._.Extraction, 
+                        PC_Migration_food = PC._.Migration.into.Food, 
+                        PC_Migration_food_simulants = PC._.Migration.into.Food.Simulants, 
+                        PE_Extraction = PE..HDPE..LDPE.._.Extraction, 
+                        PE_Migration_food = PE..HDPE..LDPE.._.Migration.into.Food, 
+                        PE_Migration_food_simulants = PE..HDPE..LDPE.._.Migration.into.Food.Simulants, 
+                        PET_Extraction = PET._.Extraction, 
+                        PET_Migration_food = PET._.Migration.into.Food, 
+                        PET_Migration_food_simulants = PET._.Migration.into.Food.Simulants, 
+                        PLA_Extraction = PLA._.Extraction, 
+                        PLA_Migration_food_simulants = PLA._.Migration.into.Food.Simulants, 
+                        unespecified_plastic_Extraction = Plastic._.Extraction, 
+                        unespecified_plastic_Migration_food = Plastic._.Migration.into.Food, 
+                        unespecified_plastic_Migration_food_simulants = Plastic._.Migration.into.Food.Simulants, 
+                        PP_Extraction = PP._.Extraction, 
+                        PP_Migration_food = PP._.Migration.into.Food, 
+                        PP_Migration_food_simulants = PP._.Migration.into.Food.Simulants, 
+                        PS_Extraction = PS._.Extraction, 
+                        PS_Migration_food = PS._.Migration.into.Food, 
+                        PS_Migration_food_simulants = PS._.Migration.into.Food.Simulants, 
+                        PUR_Extraction = PU._.Extraction, 
+                        PUR_Migration_food = PU._.Migration.into.Food, 
+                        PUR_Migration_food_simulants = PU._.Migration.into.Food.Simulants, 
+                        PVC_Extraction = PVC._.Extraction, 
+                        PVC_Migration_food = PVC._.Migration.into.Food, 
+                        PVC_Migration_food_simulants = PVC._.Migration.into.Food.Simulants, 
+                        RecPET_Extraction = Rec.PET._.Extraction, 
+                        RecPET_Migration_food = Rec.PET._.Migration.into.Food, 
+                        RecPET_Migration_food_simulants = Rec.PET._.Migration.into.Food.Simulants)
+
+View(DataFCCmigex_2)
+
+#as numeric
+DataFCCmigex_2$Melamine_Extraction<-as.numeric(DataFCCmigex_2$Melamine_Extraction)
+DataFCCmigex_2$Multilayer_Extraction<-as.numeric(DataFCCmigex_2$Multilayer_Extraction)
+DataFCCmigex_2$PA_Extraction<-as.numeric(DataFCCmigex_2$PA_Extraction)
+DataFCCmigex_2$PC_Extraction<-as.numeric(DataFCCmigex_2$PC_Extraction)
+DataFCCmigex_2$PE_Extraction<-as.numeric(DataFCCmigex_2$PE_Extraction)
+DataFCCmigex_2$PET_Extraction<-as.numeric(DataFCCmigex_2$PET_Extraction)
+DataFCCmigex_2$PLA_Extraction<-as.numeric(DataFCCmigex_2$PLA_Extraction)
+DataFCCmigex_2$unespecified_plastic_Extraction<-as.numeric(DataFCCmigex_2$unespecified_plastic_Extraction)
+DataFCCmigex_2$PP_Extraction<-as.numeric(DataFCCmigex_2$PP_Extraction)
+DataFCCmigex_2$PS_Extraction<-as.numeric(DataFCCmigex_2$PS_Extraction)
+DataFCCmigex_2$PUR_Extraction<-as.numeric(DataFCCmigex_2$PUR_Extraction)
+DataFCCmigex_2$PVC_Extraction<-as.numeric(DataFCCmigex_2$PVC_Extraction)
+DataFCCmigex_2$RecPET_Extraction<-as.numeric(DataFCCmigex_2$RecPET_Extraction)
+
+DataFCCmigex_2$Melamine_Migration_food<-as.numeric(DataFCCmigex_2$Melamine_Migration_food)
+DataFCCmigex_2$Multilayer_Migration_food<-as.numeric(DataFCCmigex_2$Multilayer_Migration_food)
+DataFCCmigex_2$PA_Migration_food<-as.numeric(DataFCCmigex_2$PA_Migration_food)
+DataFCCmigex_2$PC_Migration_food<-as.numeric(DataFCCmigex_2$PC_Migration_food)
+DataFCCmigex_2$PE_Migration_food<-as.numeric(DataFCCmigex_2$PE_Migration_food)
+DataFCCmigex_2$PET_Migration_food<-as.numeric(DataFCCmigex_2$PET_Migration_food)
+DataFCCmigex_2$unespecified_plastic_Migration_food<-as.numeric(DataFCCmigex_2$unespecified_plastic_Migration_food)
+DataFCCmigex_2$PP_Migration_food<-as.numeric(DataFCCmigex_2$PP_Migration_food)
+DataFCCmigex_2$PS_Migration_food<-as.numeric(DataFCCmigex_2$PS_Migration_food)
+DataFCCmigex_2$PUR_Migration_food<-as.numeric(DataFCCmigex_2$PUR_Migration_food)
+DataFCCmigex_2$PVC_Migration_food<-as.numeric(DataFCCmigex_2$PVC_Migration_food)
+DataFCCmigex_2$RecPET_Migration_food<-as.numeric(DataFCCmigex_2$RecPET_Migration_food)
+
+DataFCCmigex_2$Melamine_Migration_food_simulants<-as.numeric(DataFCCmigex_2$Melamine_Migration_food_simulants)
+DataFCCmigex_2$Multilayer_Migration_food_simulants<-as.numeric(DataFCCmigex_2$Multilayer_Migration_food_simulants)
+DataFCCmigex_2$PA_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PA_Migration_food_simulants)
+DataFCCmigex_2$PC_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PC_Migration_food_simulants)
+DataFCCmigex_2$PE_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PE_Migration_food_simulants)
+DataFCCmigex_2$PET_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PET_Migration_food_simulants)
+DataFCCmigex_2$PLA_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PLA_Migration_food_simulants)
+DataFCCmigex_2$unespecified_plastic_Migration_food_simulants<-as.numeric(DataFCCmigex_2$unespecified_plastic_Migration_food_simulants)
+DataFCCmigex_2$PP_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PP_Migration_food_simulants)
+DataFCCmigex_2$PS_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PS_Migration_food_simulants)
+DataFCCmigex_2$PUR_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PUR_Migration_food_simulants)
+DataFCCmigex_2$PVC_Migration_food_simulants<-as.numeric(DataFCCmigex_2$PVC_Migration_food_simulants)
+DataFCCmigex_2$RecPET_Migration_food_simulants<-as.numeric(DataFCCmigex_2$RecPET_Migration_food_simulants)
+
+##compile together PET and RecPET
+#extraction
+for (i in 1:nrow(DataFCCmigex_2)){
+  if(is.na(DataFCCmigex_2$PET_Extraction[i])&is.na(DataFCCmigex_2$RecPET_Extraction[i])){
+    DataFCCmigex_2$PET_Extraction[i] = NA
+  }
+  else{
+    DataFCCmigex_2$PET_Extraction[i] = max(c(DataFCCmigex_2$PET_Extraction[i],DataFCCmigex_2$RecPET_Extraction[i], na.rm = TRUE))
+  }
+}
+#Migration_food
+for (i in 1:nrow(DataFCCmigex_2)){
+  if(is.na(DataFCCmigex_2$PET_Migration_food[i])&is.na(DataFCCmigex_2$RecPET_Migration_food[i])){
+    DataFCCmigex_2$PET_Migration_food[i] = NA
+  }
+  else{
+    DataFCCmigex_2$PET_Migration_food[i] = max(c(DataFCCmigex_2$PET_Migration_food[i],DataFCCmigex_2$RecPET_Migration_food[i], na.rm = TRUE))
+  }
+}
+#Migration_food_simulants
+for (i in 1:nrow(DataFCCmigex_2)){
+  if(is.na(DataFCCmigex_2$PET_Migration_food_simulants[i])&is.na(DataFCCmigex_2$RecPET_Migration_food_simulants[i])){
+    DataFCCmigex_2$PET_Migration_food_simulants[i] = NA
+  }
+  else{
+    DataFCCmigex_2$PET_Migration_food_simulants[i] = max(c(DataFCCmigex_2$PET_Migration_food_simulants[i],DataFCCmigex_2$RecPET_Migration_food_simulants[i], na.rm = TRUE))
+  }
+}
+
+```
+
+#1.3 Sum up all extraction = Extraction and migration_food and migration_food_stimulants = Migration
+```{r}
+#SUM-UP ALL EXTRACTION AND MIGRATION
+#Extraction
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$Melamine_Extraction[i])&is.na(DataFCCmigex_2$Multilayer_Extraction[i])&is.na(DataFCCmigex_2$PA_Extraction[i])&is.na(DataFCCmigex_2$PC_Extraction[i])&is.na(DataFCCmigex_2$PE_Extraction[i])&is.na(DataFCCmigex_2$PET_Extraction[i])&is.na(DataFCCmigex_2$PLA_Extraction[i])&is.na(DataFCCmigex_2$unespecified_plastic_Extraction[i])&is.na(DataFCCmigex_2$PP_Extraction[i])&is.na(DataFCCmigex_2$PS_Extraction[i])&is.na(DataFCCmigex_2$PUR_Extraction[i])&is.na(DataFCCmigex_2$PVC_Extraction[i])){
+    DataFCCmigex_2$Extraction[i] = NA
+  }
+  else {
+    DataFCCmigex_2$Extraction[i] = max(c(DataFCCmigex_2$Melamine_Extraction[i], DataFCCmigex_2$Multilayer_Extraction[i], DataFCCmigex_2$PA_Extraction[i], DataFCCmigex_2$PC_Extraction[i], DataFCCmigex_2$PE_Extraction[i], DataFCCmigex_2$PET_Extraction[i], DataFCCmigex_2$PLA_Extraction[i], DataFCCmigex_2$unespecified_plastic_Extraction[i], DataFCCmigex_2$PP_Extraction[i], DataFCCmigex_2$PS_Extraction[i], DataFCCmigex_2$PUR_Extraction[i], DataFCCmigex_2$PVC_Extraction[i]), na.rm=TRUE)
+  }
+}
+#Migration_food
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$Melamine_Migration_food[i])&is.na(DataFCCmigex_2$Multilayer_Migration_food[i])&is.na(DataFCCmigex_2$PA_Migration_food[i])&is.na(DataFCCmigex_2$PC_Migration_food[i])&is.na(DataFCCmigex_2$PE_Migration_food[i])&is.na(DataFCCmigex_2$PET_Migration_food[i])&is.na(DataFCCmigex_2$unespecified_plastic_Migration_food[i])&is.na(DataFCCmigex_2$PP_Migration_food[i])&is.na(DataFCCmigex_2$PS_Migration_food[i])&is.na(DataFCCmigex_2$PUR_Migration_food[i])&is.na(DataFCCmigex_2$PVC_Migration_food[i])){
+    DataFCCmigex_2$Migration_food[i] = NA
+  }
+  else {
+    DataFCCmigex_2$Migration_food[i] = max(c(DataFCCmigex_2$Melamine_Migration_food[i], DataFCCmigex_2$Multilayer_Migration_food[i], DataFCCmigex_2$PA_Migration_food[i], DataFCCmigex_2$PC_Migration_food[i], DataFCCmigex_2$PE_Migration_food[i], DataFCCmigex_2$PET_Migration_food[i], DataFCCmigex_2$unespecified_plastic_Migration_food[i], DataFCCmigex_2$PP_Migration_food[i], DataFCCmigex_2$PS_Migration_food[i], DataFCCmigex_2$PUR_Migration_food[i], DataFCCmigex_2$PVC_Migration_food[i]), na.rm=TRUE)
+  }
+}
+#Migration_food_simulants
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$Melamine_Migration_food_simulants[i])&is.na(DataFCCmigex_2$Multilayer_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PA_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PC_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PE_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PET_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PLA_Migration_food_simulants[i])&is.na(DataFCCmigex_2$unespecified_plastic_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PP_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PS_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PUR_Migration_food_simulants[i])&is.na(DataFCCmigex_2$PVC_Migration_food_simulants[i])){
+    DataFCCmigex_2$Migration_food_simulants[i] = NA
+  }
+  else {
+    DataFCCmigex_2$Migration_food_simulants[i] = max(c(DataFCCmigex_2$Melamine_Migration_food_simulants[i], DataFCCmigex_2$Multilayer_Migration_food_simulants[i], DataFCCmigex_2$PA_Migration_food_simulants[i], DataFCCmigex_2$PC_Migration_food_simulants[i], DataFCCmigex_2$PE_Migration_food_simulants[i], DataFCCmigex_2$PET_Migration_food_simulants[i], DataFCCmigex_2$PLA_Migration_food_simulants[i], DataFCCmigex_2$unespecified_plastic_Migration_food_simulants[i], DataFCCmigex_2$PP_Migration_food_simulants[i], DataFCCmigex_2$PS_Migration_food_simulants[i], DataFCCmigex_2$PUR_Migration_food_simulants[i], DataFCCmigex_2$PVC_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+
+#Migration_food and Migration_food_simulants
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$Migration_food[i])&is.na(DataFCCmigex_2$Migration_food_simulants[i])){
+    DataFCCmigex_2$Migration[i] = NA
+  }
+  else {
+    DataFCCmigex_2$Migration[i] = max(c(DataFCCmigex_2$Migration_food[i], DataFCCmigex_2$Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+  
+
+# Export data as csv
+write.csv(DataFCCmigex_2, "FCCmigex_split_and_curated_summary_migration_extraction.csv", row.names=FALSE)
+
+```
+
+#1.4 Create new columns per each polymer type
+```{r}
+#CREATE COLUMNS PER EACH POLYMER MERGING ALL INFORMATION FOR EXTRACTION AND MIGRATION
+#Melamine
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$Melamine_Extraction[i])&is.na(DataFCCmigex_2$Melamine_Migration_food[i])&is.na(DataFCCmigex_2$Melamine_Migration_food_simulants[i])){
+    DataFCCmigex_2$Melamine[i]=NA
+  }
+    else {
+    DataFCCmigex_2$Melamine[i]=max(c(DataFCCmigex_2$Melamine_Extraction[i],DataFCCmigex_2$Melamine_Migration_food[i],DataFCCmigex_2$Melamine_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#Multilayer
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$Multilayer_Extraction[i])&is.na(DataFCCmigex_2$Multilayer_Migration_food[i])&is.na(DataFCCmigex_2$Multilayer_Migration_food_simulants[i])){
+    DataFCCmigex_2$Multilayer[i]=NA
+  }
+    else {
+    DataFCCmigex_2$Multilayer[i]=max(c(DataFCCmigex_2$Multilayer_Extraction[i],DataFCCmigex_2$Multilayer_Migration_food[i],DataFCCmigex_2$Multilayer_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PA
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PA_Extraction[i])&is.na(DataFCCmigex_2$PA_Migration_food[i])&is.na(DataFCCmigex_2$PA_Migration_food_simulants[i])){
+    DataFCCmigex_2$PA[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PA[i]=max(c(DataFCCmigex_2$PA_Extraction[i],DataFCCmigex_2$PA_Migration_food[i],DataFCCmigex_2$PA_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PC
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PC_Extraction[i])&is.na(DataFCCmigex_2$PC_Migration_food[i])&is.na(DataFCCmigex_2$PC_Migration_food_simulants[i])){
+    DataFCCmigex_2$PC[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PC[i]=max(c(DataFCCmigex_2$PC_Extraction[i],DataFCCmigex_2$PC_Migration_food[i],DataFCCmigex_2$PC_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PE
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PE_Extraction[i])&is.na(DataFCCmigex_2$PE_Migration_food[i])&is.na(DataFCCmigex_2$PE_Migration_food_simulants[i])){
+    DataFCCmigex_2$PE[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PE[i]=max(c(DataFCCmigex_2$PE_Extraction[i],DataFCCmigex_2$PE_Migration_food[i],DataFCCmigex_2$PE_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PET
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PET_Extraction[i])&is.na(DataFCCmigex_2$PET_Migration_food[i])&is.na(DataFCCmigex_2$PET_Migration_food_simulants[i])){
+    DataFCCmigex_2$PET[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PET[i]=max(c(DataFCCmigex_2$PET_Extraction[i],DataFCCmigex_2$PET_Migration_food[i],DataFCCmigex_2$PET_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PLA
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PLA_Extraction[i])&is.na(DataFCCmigex_2$PLA_Migration_food_simulants[i])){
+    DataFCCmigex_2$PLA[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PLA[i]=max(c(DataFCCmigex_2$PLA_Extraction[i],DataFCCmigex_2$PLA_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#unespecified plastic
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$unespecified_plastic_Extraction[i])&is.na(DataFCCmigex_2$unespecified_plastic_Migration_food[i])&is.na(DataFCCmigex_2$unespecified_plastic_Migration_food_simulants[i])){
+    DataFCCmigex_2$unespecified_plastic[i]=NA
+  }
+    else {
+    DataFCCmigex_2$unespecified_plastic[i]=max(c(DataFCCmigex_2$unespecified_plastic_Extraction[i],DataFCCmigex_2$unespecified_plastic_Migration_food[i],DataFCCmigex_2$unespecified_plastic_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PP
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PP_Extraction[i])&is.na(DataFCCmigex_2$PP_Migration_food[i])&is.na(DataFCCmigex_2$PP_Migration_food_simulants[i])){
+    DataFCCmigex_2$PP[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PP[i]=max(c(DataFCCmigex_2$PP_Extraction[i],DataFCCmigex_2$PP_Migration_food[i],DataFCCmigex_2$PP_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PS
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PS_Extraction[i])&is.na(DataFCCmigex_2$PS_Migration_food[i])&is.na(DataFCCmigex_2$PS_Migration_food_simulants[i])){
+    DataFCCmigex_2$PS[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PS[i]=max(c(DataFCCmigex_2$PS_Extraction[i],DataFCCmigex_2$PS_Migration_food[i],DataFCCmigex_2$PS_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PUR
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PUR_Extraction[i])&is.na(DataFCCmigex_2$PUR_Migration_food[i])&is.na(DataFCCmigex_2$PUR_Migration_food_simulants[i])){
+    DataFCCmigex_2$PUR[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PUR[i]=max(c(DataFCCmigex_2$PUR_Extraction[i],DataFCCmigex_2$PUR_Migration_food[i],DataFCCmigex_2$PUR_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+#PVC
+for (i in 1:nrow(DataFCCmigex_2)){ 
+  if (is.na(DataFCCmigex_2$PVC_Extraction[i])&is.na(DataFCCmigex_2$PVC_Migration_food[i])&is.na(DataFCCmigex_2$PVC_Migration_food_simulants[i])){
+    DataFCCmigex_2$PVC[i]=NA
+  }
+    else {
+    DataFCCmigex_2$PVC[i]=max(c(DataFCCmigex_2$PVC_Extraction[i],DataFCCmigex_2$PVC_Migration_food[i],DataFCCmigex_2$PVC_Migration_food_simulants[i]), na.rm=TRUE)
+  }
+}
+
+#include a new variable: CAS (casld_final W/O ')
+DataFCCmigex_3 <- DataFCCmigex_2 %>%
+  mutate(CAS=casld_final,gsub,pattern="'",replacement="")
+
+FCCmigex$casId_final = lapply(FCCmigex$casId_final, gsub, pattern="'", replacement="")
+
+#export data as csv
+write.csv(DataFCCmigex_2, "FCCmigex_split_and_curated_summary_migration_extraction_polymers.csv", row.names=FALSE)
+
+```
+
+#1.5 Check CAS with PlastChem and correct CAS accordingly 
+manual checking of CAS numbers -> see the file: FCCmigex_split_and_curated_summary_migration_extraction_polymers_checked -> correct file: version corrected n= 3237
+
+##2.LITCHEM
+#2.1 Create new columns from the original file 
+```{r}
+LitChem = read.csv(file.choose(),sep=",")#file: LitChem_v230620_3_mod.csv
+nrow(LitChem)
+View(LitChem)
+summary(LitChem)
+
+# Remove the rows without any CAS number
+which(LitChem$CASRN=="-") # 
+LitChemx = LitChem[-which(LitChem$CASRN=="-"), ]#the - before which -> remove
+nrow(LitChemx)
+View(LitChemx)
+
+### FILE 1: Split columns
+## Create a new column with data from "Polymer_new" and "Experiment" - interstep to make the process easier
+# Create a new column in which we have the information from both "Polymer_new" and "Experiment" columns
+for (i in 1:nrow(LitChemx)){
+  LitChemx$Polymer_Experiment[i] = paste(LitChemx$Polymer_new[i],"_",LitChemx$Experiment[i])
+}
+
+### Create new columns for each case
+#We create a new column for each possible association Polymer_new/Experiment.  
+# Create a list with all column names we have to add (alphabetic order)
+list_columns_to_add = sort(unique(LitChemx$Polymer_Experiment), decreasing=FALSE)
+
+for (i in 1:length(list_columns_to_add)){ # for each element of the list
+  # Create a new column
+  LitChemx$New_column = NA
+  # Rename the new column with the name in the list
+  colnames(LitChemx)[colnames(LitChemx)=="New_column"] = list_columns_to_add[i]
+}
+
+list_columns_to_add
+View(LitChemx)
+write.csv(LitChemx, "LitChemx2_mod.csv", row.names=FALSE)
+ncol(LitChemx)
+
+# Fill in the columns
+for (i in 1:length(colnames(LitChemx))){ # for each columns of our dataframe
+  for (j in 1:nrow(LitChemx)){ # for each row of our dataframe
+    # If the name of the column is the same as the value "Polymer_Experiment" in this row, the value for this row and this column is what we find in the column "Detected"
+    if (colnames(LitChemx)[i]==LitChemx$Polymer_Experiment[j]){
+      LitChemx[j,i] = LitChemx$Detected[j]
+    }
+    else{
+      LitChemx[j,i] = LitChemx[j,i]
+    }
+  }
+}
+
+View(LitChemx)
+
+### FILE 2: Remove duplicates CAS (merge rows in a list of yes, unknown for each CAS)
+# Take every value of each row with the same CAS number and put in in 1 row
+LitChemx_curated = LitChemx %>% group_by(CASRN) %>% summarise_all(list(~toString(na.omit(.))))
+
+View(LitChemx_curated)
+
+# Remove columns which are not relevant (we would have a list of information without any meaning > it's better to go in the file "LitChemx_split.csv" to have more information)
+LitChemx_curated = LitChemx_curated[,-which(names(LitChemx_curated) %in% c("LitChem_id","LitChem_id_new","Product_id_new","Polymer_new","Experiment","Detected","Product_Level1_new","Product_Level2_new","Product_Level3_new","Preperation_new","selected_conc","identifier","Substance","Polymer_Experiment"))]
+
+### FILE 3: COUNT of yes, unknown for each CAS
+# Copy the previous dataframe in a new one
+LitChemx_curated_count = LitChemx_curated
+
+for (i in 1:nrow(LitChemx_curated_count)){ # for every number of row
+  for (j in 2:ncol(LitChemx_curated_count)){ # for every number of column
+    # Create a vector of yes / unknown with the information we have for row i, column j
+    List_yes_no_unclear = as.vector(str_split_fixed(LitChemx_curated_count[i,j], pattern = ", ", n = 60))#create vector with max spaces (60 is an approx)
+    # Count how many yes, no and unclear we have in the vector
+    n_yes = length(List_yes_no_unclear[List_yes_no_unclear=="yes"])
+    n_no = length(List_yes_no_unclear[List_yes_no_unclear=="no"])
+    n_unclear = length(List_yes_no_unclear[List_yes_no_unclear=="unclear"])
+    # Delete previous value in row i column j
+    LitChemx_curated_count[i,j] = ""
+    # Add the new value in row i column j
+    if (n_yes!=0){ # if there is at least 1 yes, we add how many yes there are
+      LitChemx_curated_count[i,j] = paste(LitChemx_curated_count[i,j],n_yes,"yes")
+    }
+    if (n_no!=0){
+      LitChemx_curated_count[i,j] = paste(LitChemx_curated_count[i,j],n_no,"no")
+    }
+    if (n_unclear!=0){ 
+      LitChemx_curated_count[i,j] = paste(LitChemx_curated_count[i,j],n_unclear,"unclear")
+    }
+  }
+  
+}
+
+View(LitChemx_curated_count)
+ncol(LitChemx_curated_count)#98 columns
+
+### FILE 4: SUMMARY
+# Create a new empty dataframe with same CAS and same columns
+LitChemx_curated_summary = LitChemx_curated_count[,"CASRN"]
+for (j in colnames(LitChemx_curated_count)[2:98]){
+  LitChemx_curated_summary$New_column = 0
+  colnames(LitChemx_curated_summary)[colnames(LitChemx_curated_summary) == 'New_column'] = j
+}
+
+# Fill in the columns with correct values
+for (i in 1:nrow(LitChemx_curated_count)){ # for every number of row
+  for (j in 2:ncol(LitChemx_curated_count)){ # for every number of column
+    # if there is at least 1 yes, the value is 1
+    if (grepl("yes",LitChemx_curated_count[i,j])){
+      LitChemx_curated_summary[i,j] = 1
+    }
+    #if there is at least 1 "no" and no "yes", the value is 0
+    else if (grepl("no",LitChemx_curated_count[i,j])){
+      LitChemx_curated_summary[i,j] = 0
+    }
+    # if there is at least 1 unknown and no "Yes", the value is a 0.5
+    else if (grepl("unclear",LitChemx_curated_count[i,j])){
+      LitChemx_curated_summary[i,j] = 0.5
+    }
+    else{
+      LitChemx_curated_summary[i,j] = NA
+    }
+  }
+}
+
+View(LitChemx_curated_summary)
+
+###FILE 5:Create a file containing all Y and N per each chemical and experiment type to calculate the confidence level
+counting<- LitChemx_curated_count %>% group_by(casId_final, experiment, fcmMain, detected) %>% 
+  tally()
+count_Y<- filter(counting, detected== "yes")
+count_N<-filter(counting, detected == "no")
+counting_final<-merge(count_Y, count_N, by.x= (c("casId_final", "experiment","fcmMain")), 
+              by.y=(c("casId_final", "experiment","fcmMain")), all= T)
+
+## Export data as csv
+write.csv(LitChemx, "LitChemx_split.csv", row.names=FALSE)
+write.csv(LitChemx_curated, "LitChemx_curated.csv", row.names=FALSE)
+write.csv(LitChemx_curated_count,"LitChemx_curated_count.csv",row.names=FALSE)
+write.csv(LitChemx_curated_summary,"LitChemx_curated_summary_mod.csv",row.names=FALSE)
+
+```
+
+#2.2 Homogenize terms of LitChem
+```{r}
+LitChem = read.csv(file.choose(),sep=",")#file: LitChemx_curated_summary_mod.csv
+nrow(LitChem)
+ncol(LitChem)
+View(LitChem)
+summary(LitChem)
+names(LitChem)
+
+LitChem_sum = LitChem
+
+#curate names
+LitChem_sum <-rename(LitChem, ABS_extraction = ABS._.extraction, 
+                     ABS_none = ABS._.none, 
+                     ABS_release = ABS._.release,
+                     ABS_._unclear = ABS._.unclear, 
+                     ASA_extraction = ASA._.extraction, 
+                     ASA_release = ASA._.release, 
+                     BPC_extraction = BPC._.extraction, 
+                     cellophane_extraction = Cellophane._.extraction,
+                     cellulose_acetate_extraction = cellulose_acetate._.extraction, 
+                     cellulose_derivate_release = cellulose_derivate._.release,
+                     cellulose_nitrate_release = cellulose_nitrate._.release,
+                     EPS_extraction = EPS._.extraction, 
+                     EVA_extraction = EVA._.extraction, 
+                     EVOH_unclear = EVOH._.unclear, 
+                     HDPE_extraction = HDPE._.extraction, 
+                     HDPE_release = HDPE._.release, 
+                     HDPE_unclear = HDPE._.unclear, 
+                     HIPS_extraction = HIPS._.extraction, 
+                     HIPS_unclear = HIPS._.unclear, 
+                     LDPE_extraction = LDPE._.extraction, 
+                     LDPE_none = LDPE._.none,
+                     LDPE_release = LDPE._.release, 
+                     LDPE_._unclear = LDPE._.unclear, 
+                     Multilayer_extraction = Multilayer._.extraction, 
+                     Multilayer_release = Multilayer._.release, 
+                     Multilayer_unclear = Multilayer._.unclear, 
+                     Other_release = Other._.release, 
+                     PA_extraction = PA._.extraction, 
+                     PA_release = PA._.release, 
+                     PA_unclear = PA._.unclear, 
+                     PAA_release = PAA._.release, 
+                     PAN_extraction = PAN._.extraction, 
+                     PAN_release = PAN._.release, 
+                     PB_release = PB._.release, 
+                     PBAT_extraction = PBAT._.extraction, 
+                     PBS_extraction = PBS._.extraction, 
+                     PBT_extraction = PBT._.extraction, 
+                     PBT_release = PBT._.release,
+                     PBT_unclear = PBT._.unclear, 
+                     PC_extraction = PC._.extraction, 
+                     PC_release = PC._.release, 
+                     PC_unclear = PC._.unclear, 
+                     PCL_release = PCL._.release,
+                     PCT_release = PCT._.release,
+                     PDMS_extraction = PDMS._.extraction,
+                     PE_extraction = PE._.extraction,
+                     PE_none = PE._.none,
+                     PE_release = PE._.release,
+                     PE_._unclear = PE._.unclear,
+                     PES_unclear = PES._.unclear,
+                     PET_extraction = PET._.extraction,
+                     PET_none = PET._.none,
+                     PET_release = PET._.release,
+                     PET_._unclear = PET._.unclear,
+                     PHA_extraction = PHA._.extraction,
+                     PHA_unclear = PHA._.unclear,
+                     PLA_extraction = PLA._.extraction,
+                     PLA_unclear = PLA._.unclear,
+                     PMMA_extraction = PMMA._.extraction,
+                     PMMA_release = PMMA._.release,
+                     POM_release = POM._.release,
+                     PP_extraction = PP._.extraction,
+                     PP_none = PP._.none,
+                     PP_release = PP._.release,
+                     PP_._unclear = PP._.unclear,
+                     PPO_release = PPO._.release,
+                     PS_extraction = PS._.extraction,
+                     PS_release = PS._.release,
+                     PS_unclear = PS._.unclear,
+                     PTFE_extraction = PTFE._.extraction,
+                     PTFE_release = PTFE._.release,
+                     PUR_extraction = PUR._.extraction,
+                     PUR_none = PUR._.none,
+                     PUR_release = PUR._.release,
+                     PUR_._unclear = PUR._.unclear,
+                     PVA_release = PVA._.release,
+                     PVC_extraction = PVC._.extraction,
+                     PVC_none = PVC._.none,
+                     PVC_release = PVC._.release,
+                     PVC_._unclear = PVC._.unclear,
+                     PVF_release = PVF._.release,
+                     rubber_extraction = rubber._.extraction,
+                     rubber_release = rubber._.release,
+                     rubber_._unclear = rubber._.unclear,
+                     Rubber_unclear = Rubber._.unclear,#merge with above
+                     SAN_release = SAN._.release,
+                     SAP_unclear = SAP._.unclear,
+                     Silicone_release = silicone._.release,
+                     Starch_extraction = starch._.extraction,
+                     Starch_release = starch._.release,
+                     Tritan_release = Tritan._.release,
+                     unknown_extraction = unknown._.extraction,
+                     unknown_none = unknown._.none,
+                     unknown_release = unknown._.release,
+                     unknown_unclear = unknown._.unclear,#merge all unknowns together
+                     VAE_release = VAE._.release,
+                     XPS_extraction = XPS._.extraction)
+View(LitChem_sum)
+
+#merge rubber_unclear and Rubber_unclear
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$rubber_._unclear[i])&is.na(LitChem_sum$Rubber_unclear[i])){
+    LitChem_sum$Rubber_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$Rubber_unclear[i] = max(c(LitChem_sum$rubber_._unclear[i],LitChem_sum$Rubber_unclear[i], na.rm = TRUE))
+  }
+}
+#merge together all the unknowns: unknown_extraction, unknown_none, unknown_release,unknown_unclear
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$unknown_extraction[i])&is.na(LitChem_sum$unknown_none[i])&is.na(LitChem_sum$unknown_release[i])&is.na(LitChem_sum$unknown_unclear[i])){
+    LitChem_sum$unknown[i] = NA
+  }
+  else{
+    LitChem_sum$unknown[i] = max(c(LitChem_sum$unknown_extraction[i], LitChem_sum$unknown_none[i], LitChem_sum$unknown_release[i], LitChem_sum$unknown_unclear[i],na.rm = TRUE))
+  }
+}
+#merge together all none and unclear
+#ABS
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$ABS_none[i])&is.na(LitChem_sum$ABS_._unclear[i])){
+    LitChem_sum$ABS_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$ABS_unclear[i] = max(c(LitChem_sum$ABS_none[i], LitChem_sum$ABS_._unclear[i],na.rm = TRUE))
+  }
+}
+#LDPE
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$LDPE_none[i])&is.na(LitChem_sum$LDPE_._unclear[i])){
+    LitChem_sum$LDPE_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$LDPE_unclear[i] = max(c(LitChem_sum$LDPE_none[i], LitChem_sum$LDPE_._unclear[i],na.rm = TRUE))
+  }
+}
+#PET
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$PET_none[i])&is.na(LitChem_sum$PET_._unclear[i])){
+    LitChem_sum$PET_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$PET_unclear[i] = max(c(LitChem_sum$PET_none[i], LitChem_sum$PET_._unclear[i],na.rm = TRUE))
+  }
+}
+#PE
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$PE_none[i])&is.na(LitChem_sum$PE_._unclear[i])){
+    LitChem_sum$PE_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$PE_unclear[i] = max(c(LitChem_sum$PE_none[i], LitChem_sum$PE_._unclear[i],na.rm = TRUE))
+  }
+}
+#PP
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$PP_none[i])&is.na(LitChem_sum$PP_._unclear[i])){
+    LitChem_sum$PP_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$PP_unclear[i] = max(c(LitChem_sum$PP_none[i], LitChem_sum$PP_._unclear[i],na.rm = TRUE))
+  }
+}
+#PUR
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$PUR_none[i])&is.na(LitChem_sum$PUR_._unclear[i])){
+    LitChem_sum$PUR_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$PUR_unclear[i] = max(c(LitChem_sum$PUR_none[i], LitChem_sum$PUR_._unclear[i],na.rm = TRUE))
+  }
+}
+#PVC
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$PVC_none[i])&is.na(LitChem_sum$PVC_._unclear[i])){
+    LitChem_sum$PVC_unclear[i] = NA
+  }
+  else{
+    LitChem_sum$PVC_unclear[i] = max(c(LitChem_sum$PVC_none[i], LitChem_sum$PVC_._unclear[i],na.rm = TRUE))
+  }
+}
+#merge the three celluloses (release) in one
+for (i in 1:nrow(LitChem_sum)){
+  if(is.na(LitChem_sum$cellulose_derivate_release[i])&is.na(LitChem_sum$cellulose_nitrate_release[i])){
+    LitChem_sum$cellulose_release[i] = NA
+  }
+  else{
+    LitChem_sum$cellulose_release[i] = max(c(LitChem_sum$cellulose_derivate_release[i], LitChem_sum$cellulose_nitrate_release[i],na.rm = TRUE))
+  }
+}
+#remove the extra columns that I have merged together, except for the Celluloses(release)
+LitChem_sum = LitChem_sum[,!(names(LitChem_sum) %in% c("rubber_._unclear","Rubber_unclear","unknown_extraction","unknown_none","unknown_release","unknown_unclear","ABS_none","ABS_._unclear","LDPE_none","LDPE_._unclear","PET_none","PET_._unclear","PE_none","PE_._unclear","PP_none","PP_._unclear","PUR_none","PUR_._unclear","PVC_none","PVC_._unclear"))]
+
+names(LitChem_sum)
+
+#as numeric
+LitChem_sum$ABS_extraction<-as.numeric(LitChem_sum$ABS_extraction)
+LitChem_sum$ABS_release<-as.numeric(LitChem_sum$ABS_release)
+LitChem_sum$ASA_extraction<-as.numeric(LitChem_sum$ASA_extraction)
+LitChem_sum$ASA_release<-as.numeric(LitChem_sum$ASA_release)
+LitChem_sum$BPC_extraction<-as.numeric(LitChem_sum$BPC_extraction)
+LitChem_sum$cellophane_extraction<-as.numeric(LitChem_sum$cellophane_extraction)
+LitChem_sum$cellulose_acetate_extraction<-as.numeric(LitChem_sum$cellulose_acetate_extraction)
+LitChem_sum$cellulose_derivate_release<-as.numeric(LitChem_sum$cellulose_derivate_release)
+LitChem_sum$cellulose_nitrate_release<-as.numeric(LitChem_sum$cellulose_nitrate_release)
+LitChem_sum$EPS_extraction<-as.numeric(LitChem_sum$EPS_extraction)
+LitChem_sum$EVA_extraction<-as.numeric(LitChem_sum$EVA_extraction)
+LitChem_sum$EVOH_unclear<-as.numeric(LitChem_sum$EVOH_unclear)
+LitChem_sum$HDPE_extraction<-as.numeric(LitChem_sum$HDPE_extraction)
+LitChem_sum$HDPE_release<-as.numeric(LitChem_sum$HDPE_release)
+LitChem_sum$HDPE_unclear<-as.numeric(LitChem_sum$HDPE_unclear)
+LitChem_sum$HIPS_extraction<-as.numeric(LitChem_sum$HIPS_extraction)
+LitChem_sum$HIPS_unclear<-as.numeric(LitChem_sum$HIPS_unclear)
+LitChem_sum$LDPE_extraction<-as.numeric(LitChem_sum$LDPE_extraction)
+LitChem_sum$LDPE_release<-as.numeric(LitChem_sum$LDPE_release)
+LitChem_sum$Multilayer_extraction<-as.numeric(LitChem_sum$Multilayer_extraction)
+LitChem_sum$Multilayer_release<-as.numeric(LitChem_sum$Multilayer_release)
+LitChem_sum$Multilayer_unclear<-as.numeric(LitChem_sum$Multilayer_unclear)
+LitChem_sum$Other_release<-as.numeric(LitChem_sum$Other_release)
+LitChem_sum$PA_extraction<-as.numeric(LitChem_sum$PA_extraction)
+LitChem_sum$PA_release<-as.numeric(LitChem_sum$PA_release)
+LitChem_sum$PA_unclear<-as.numeric(LitChem_sum$PA_unclear)
+LitChem_sum$PAA_release<-as.numeric(LitChem_sum$PAA_release)
+LitChem_sum$PAN_extraction<-as.numeric(LitChem_sum$PAN_extraction)
+LitChem_sum$PAN_release<-as.numeric(LitChem_sum$PAN_release)
+LitChem_sum$PB_release<-as.numeric(LitChem_sum$PB_release)
+LitChem_sum$PBAT_extraction<-as.numeric(LitChem_sum$PBAT_extraction)
+LitChem_sum$PBS_extraction<-as.numeric(LitChem_sum$PBS_extraction)
+LitChem_sum$PBT_extraction<-as.numeric(LitChem_sum$PBT_extraction)
+LitChem_sum$PBT_release<-as.numeric(LitChem_sum$PBT_release)
+LitChem_sum$PBT_unclear<-as.numeric(LitChem_sum$PBT_unclear)
+LitChem_sum$PC_extraction<-as.numeric(LitChem_sum$PC_extraction)
+LitChem_sum$PC_release<-as.numeric(LitChem_sum$PC_release)
+LitChem_sum$PC_unclear<-as.numeric(LitChem_sum$PC_unclear)
+LitChem_sum$PCL_release<-as.numeric(LitChem_sum$PCL_release)
+LitChem_sum$PCT_release<-as.numeric(LitChem_sum$PCT_release)
+LitChem_sum$PDMS_extraction<-as.numeric(LitChem_sum$PDMS_extraction)
+LitChem_sum$PE_extraction<-as.numeric(LitChem_sum$PE_extraction)
+LitChem_sum$PE_release<-as.numeric(LitChem_sum$PE_release)
+LitChem_sum$PES_unclear<-as.numeric(LitChem_sum$PES_unclear)
+LitChem_sum$PET_extraction<-as.numeric(LitChem_sum$PET_extraction)
+LitChem_sum$PET_release<-as.numeric(LitChem_sum$PET_release)
+LitChem_sum$PHA_extraction<-as.numeric(LitChem_sum$PHA_extraction)
+LitChem_sum$PHA_unclear<-as.numeric(LitChem_sum$PHA_unclear)
+LitChem_sum$PLA_extraction<-as.numeric(LitChem_sum$PLA_extraction)
+LitChem_sum$PLA_unclear<-as.numeric(LitChem_sum$PLA_unclear)
+LitChem_sum$PMMA_extraction<-as.numeric(LitChem_sum$PMMA_extraction)
+LitChem_sum$PMMA_release<-as.numeric(LitChem_sum$PMMA_release)
+LitChem_sum$POM_release<-as.numeric(LitChem_sum$POM_release)
+LitChem_sum$PP_extraction<-as.numeric(LitChem_sum$PP_extraction)
+LitChem_sum$PP_release<-as.numeric(LitChem_sum$PP_release)
+LitChem_sum$PPO_release<-as.numeric(LitChem_sum$PPO_release)
+LitChem_sum$PS_extraction<-as.numeric(LitChem_sum$PS_extraction)
+LitChem_sum$PS_release<-as.numeric(LitChem_sum$PS_release)
+LitChem_sum$PS_unclear<-as.numeric(LitChem_sum$PS_unclear)
+LitChem_sum$PTFE_extraction<-as.numeric(LitChem_sum$PTFE_extractio)
+LitChem_sum$PTFE_release<-as.numeric(LitChem_sum$PTFE_release)
+LitChem_sum$PUR_extraction<-as.numeric(LitChem_sum$PUR_extraction)
+LitChem_sum$PUR_release<-as.numeric(LitChem_sum$PUR_release)
+LitChem_sum$PVA_release<-as.numeric(LitChem_sum$PVA_release)
+LitChem_sum$PVC_extraction<-as.numeric(LitChem_sum$PVC_extraction)
+LitChem_sum$PVC_release<-as.numeric(LitChem_sum$PVC_release)
+LitChem_sum$PVF_release<-as.numeric(LitChem_sum$PVF_release)
+LitChem_sum$rubber_extraction<-as.numeric(LitChem_sum$rubber_extraction)
+LitChem_sum$rubber_release<-as.numeric(LitChem_sum$rubber_release)
+LitChem_sum$SAN_release<-as.numeric(LitChem_sum$SAN_release)
+LitChem_sum$SAP_unclear<-as.numeric(LitChem_sum$SAP_unclear)
+LitChem_sum$Silicone_release<-as.numeric(LitChem_sum$Silicone_release)
+LitChem_sum$Starch_extraction<-as.numeric(LitChem_sum$Starch_extraction)
+LitChem_sum$Starch_release<-as.numeric(LitChem_sum$Starch_release)
+LitChem_sum$Tritan_release<-as.numeric(LitChem_sum$Tritan_release)
+LitChem_sum$VAE_release<-as.numeric(LitChem_sum$VAE_release)
+LitChem_sum$XPS_extraction<-as.numeric(LitChem_sum$XPS_extraction)
+LitChem_sum$unknown<-as.numeric(LitChem_sum$unknown)
+LitChem_sum$ABS_unclear<-as.numeric(LitChem_sum$ABS_unclear)
+LitChem_sum$LDPE_unclear<-as.numeric(LitChem_sum$LDPE_unclear)
+LitChem_sum$PET_unclear<-as.numeric(LitChem_sum$PET_unclear)
+LitChem_sum$PE_unclear<-as.numeric(LitChem_sum$PE_unclear)
+LitChem_sum$PP_unclear<-as.numeric(LitChem_sum$PP_unclear)
+LitChem_sum$PUR_unclear<-as.numeric(LitChem_sum$PUR_unclear)
+LitChem_sum$PVC_unclear<-as.numeric(LitChem_sum$PVC_unclear)
+LitChem_sum$cellulose_release<-as.numeric(LitChem_sum$cellulose_release)
+
+ncol(LitChem_sum)
+View(LitChem_sum)
+summary(LitChem_sum)
+names(LitChem_sum)
+is.numeric(LitChem_sum$ABS_extraction)
+
+write.csv(LitChem_sum,"LitChemx_curated_summary_prep.csv",row.names=FALSE)
+```
+
+#2.3 Sum up all extraction and release
+```{r}
+#SUM-UP ALL EXTRACTION AND MIGRATION 
+#Extraction
+for (i in 1:nrow(LitChem_sum)){ 
+  if (is.na(LitChem_sum$ABS_extraction[i]) & is.na(LitChem_sum$ASA_extraction[i]) & is.na(LitChem_sum$BPC_extraction[i]) & is.na(LitChem_sum$cellophane_extraction[i]) & is.na(LitChem_sum$cellulose_acetate_extraction[i]) & is.na(LitChem_sum$EPS_extraction[i]) & is.na(LitChem_sum$EVA_extraction[i]) & is.na(LitChem_sum$HDPE_extraction[i]) & is.na(LitChem_sum$HIPS_extraction[i]) & is.na(LitChem_sum$LDPE_extraction[i]) & is.na(LitChem_sum$Multilayer_extraction[i]) & is.na(LitChem_sum$PA_extraction[i]) &  is.na(LitChem_sum$PAN_extraction[i]) & is.na(LitChem_sum$PBAT_extraction[i]) & is.na(LitChem_sum$PBS_extraction[i]) & is.na(LitChem_sum$PBT_extraction[i]) & is.na(LitChem_sum$PC_extraction[i]) & is.na(LitChem_sum$PDMS_extraction[i]) & is.na(LitChem_sum$PE_extraction[i]) & is.na(LitChem_sum$PET_extraction[i]) & is.na(LitChem_sum$PHA_extraction[i]) & is.na(LitChem_sum$PLA_extraction[i]) & is.na(LitChem_sum$PMMA_extraction[i]) & is.na(LitChem_sum$PP_extraction[i]) & is.na(LitChem_sum$PS_extraction[i]) & is.na(LitChem_sum$PTFE_extraction[i]) & is.na(LitChem_sum$PUR_extraction[i]) & is.na(LitChem_sum$PVC_extraction[i]) &  is.na(LitChem_sum$rubber_extraction[i]) & is.na(LitChem_sum$Starch_extraction[i]) & is.na(LitChem_sum$XPS_extraction[i])){
+    LitChem_sum$Extraction[i] = NA
+  }
+  else {
+    LitChem_sum$Extraction[i] = max(c(LitChem_sum$ABS_extraction[i], LitChem_sum$ASA_extraction[i], LitChem_sum$BPC_extraction[i], LitChem_sum$cellophane_extraction[i], LitChem_sum$cellulose_acetate_extraction[i], LitChem_sum$EPS_extraction[i], LitChem_sum$EVA_extraction[i], LitChem_sum$HDPE_extraction[i], LitChem_sum$HIPS_extraction[i], LitChem_sum$LDPE_extraction[i], LitChem_sum$Multilayer_extraction[i], LitChem_sum$PA_extraction[i], LitChem_sum$PAN_extraction[i], LitChem_sum$PBAT_extraction[i], LitChem_sum$PBS_extraction[i], LitChem_sum$PBT_extraction[i], LitChem_sum$PC_extraction[i], LitChem_sum$PDMS_extraction[i], LitChem_sum$PE_extraction[i], LitChem_sum$PET_extraction[i], LitChem_sum$PHA_extraction[i], LitChem_sum$PLA_extraction[i], LitChem_sum$PMMA_extraction[i], LitChem_sum$PP_extraction[i], LitChem_sum$PS_extraction[i], LitChem_sum$PTFE_extraction[i], LitChem_sum$PUR_extraction[i], LitChem_sum$PVC_extraction[i], LitChem_sum$rubber_extraction[i], LitChem_sum$Starch_extraction[i], LitChem_sum$XPS_extraction[i]), na.rm=TRUE)
+  }
+}
+#Release
+for (i in 1:nrow(LitChem_sum)){ 
+  if (is.na(LitChem_sum$ABS_release[i]) & is.na(LitChem_sum$ASA_release[i]) & is.na(LitChem_sum$cellulose_release[i]) & is.na(LitChem_sum$HDPE_release[i]) &  is.na(LitChem_sum$LDPE_release[i]) & is.na(LitChem_sum$Multilayer_release[i]) & is.na(LitChem_sum$PA_release[i]) & is.na(LitChem_sum$PAA_release[i]) & is.na(LitChem_sum$PAN_release[i]) & is.na(LitChem_sum$PB_release[i]) & is.na(LitChem_sum$PBT_release[i]) & is.na(LitChem_sum$PC_release[i]) & is.na(LitChem_sum$PCT_release[i]) & is.na(LitChem_sum$PE_release[i]) & is.na(LitChem_sum$PET_release[i]) & is.na(LitChem_sum$PMMA_release[i]) & is.na(LitChem_sum$POM_release[i]) & is.na(LitChem_sum$PP_release[i]) & is.na(LitChem_sum$PPO_release[i]) & is.na(LitChem_sum$PS_release[i]) & is.na(LitChem_sum$PTFE_release[i]) & is.na(LitChem_sum$PUR_release[i]) & is.na(LitChem_sum$PVC_release[i]) & is.na(LitChem_sum$PVA_release[i]) & is.na(LitChem_sum$PVF_release[i]) & is.na(LitChem_sum$rubber_release[i]) & is.na(LitChem_sum$SAN_release[i]) & is.na(LitChem_sum$Starch_release[i]) & is.na(LitChem_sum$Silicone_release[i]) & is.na(LitChem_sum$Tritan_release[i]) & is.na(LitChem_sum$VAE_release[i])){
+    LitChem_sum$Release[i] = NA
+  }
+  else {
+    LitChem_sum$Release[i] = max(c(LitChem_sum$ABS_release[i], LitChem_sum$ASA_release[i], LitChem_sum$cellulose_release[i], LitChem_sum$HDPE_release[i], LitChem_sum$LDPE_release[i], LitChem_sum$Multilayer_release[i], LitChem_sum$PA_release[i], LitChem_sum$PAA_release[i], LitChem_sum$PAN_release[i], LitChem_sum$PB_release[i], LitChem_sum$PBT_release[i], LitChem_sum$PC_release[i], LitChem_sum$PCT_release[i], LitChem_sum$PE_release[i], LitChem_sum$PET_release[i], LitChem_sum$PMMA_release[i], LitChem_sum$POM_release[i], LitChem_sum$PP_release[i], LitChem_sum$PPO_release[i], LitChem_sum$PS_release[i], LitChem_sum$PTFE_release[i], LitChem_sum$PUR_release[i], LitChem_sum$PVC_release[i], LitChem_sum$PVA_release[i], LitChem_sum$PVF_release[i], LitChem_sum$rubber_release[i], LitChem_sum$SAN_release[i], LitChem_sum$Starch_release[i], LitChem_sum$Silicone_release[i], LitChem_sum$Tritan_release[i], LitChem_sum$VAE_release[i]), na.rm=TRUE)
+  }
+}
+#unclear
+for (i in 1:nrow(LitChem_sum)){ 
+  if (is.na(LitChem_sum$ABS_unclear[i]) & is.na(LitChem_sum$EVOH_unclear[i]) &  is.na(LitChem_sum$HDPE_unclear[i]) & is.na(LitChem_sum$HIPS_unclear[i]) & is.na(LitChem_sum$LDPE_unclear[i]) &  is.na(LitChem_sum$Multilayer_unclear[i]) & is.na(LitChem_sum$PA_unclear[i]) & is.na(LitChem_sum$PBT_unclear[i]) & is.na(LitChem_sum$PC_unclear[i]) & is.na(LitChem_sum$PE_unclear[i]) & is.na(LitChem_sum$PES_unclear[i]) & is.na(LitChem_sum$PET_unclear[i]) & is.na(LitChem_sum$PHA_unclear[i]) & is.na(LitChem_sum$PLA_unclear[i]) & is.na(LitChem_sum$PP_unclear[i]) & is.na(LitChem_sum$PS_unclear[i]) & is.na(LitChem_sum$PUR_unclear[i]) & is.na(LitChem_sum$PVC_unclear[i]) & is.na(LitChem_sum$SAP_unclear[i])){
+    LitChem_sum$Unclear[i] = NA
+  }
+  else {
+    LitChem_sum$Unclear[i] = max(c(LitChem_sum$ABS_unclear[i], LitChem_sum$EVOH_unclear[i], LitChem_sum$HDPE_unclear[i], LitChem_sum$HIPS_unclear[i], LitChem_sum$LDPE_unclear[i], LitChem_sum$Multilayer_unclear[i], LitChem_sum$PA_unclear[i], LitChem_sum$PBT_unclear[i], LitChem_sum$PC_unclear[i], LitChem_sum$PE_unclear[i], LitChem_sum$PES_unclear[i], LitChem_sum$PET_unclear[i], LitChem_sum$PHA_unclear[i], LitChem_sum$PLA_unclear[i], LitChem_sum$PP_unclear[i], LitChem_sum$PS_unclear[i], LitChem_sum$PUR_unclear[i], LitChem_sum$PVC_unclear[i], LitChem_sum$SAP_unclear[i]), na.rm=TRUE)
+  }
+}
+
+write.csv(LitChem_sum,"LitChemx_curated_summary_migration_extraction.csv",row.names=FALSE)
+```
+
+#2.4 Create single columns for the polymers with different scoring if extraction (1), release (2), unclear (0.5)
+```{r}
+#CREATE COLUMNS PER EACH POLYMER MERGING ALL INFORMATION FOR EXTRACTION AND MIGRATION
+LitChem_curated = read.csv(file.choose(),sep=",")#LitChemx_curated_summary_migation_extraction.csv
+nrow(LitChem_curated)
+ncol(LitChem_curated)
+View(LitChem_curated)
+summary(LitChem_curated)
+names(LitChem_curated)
+
+#ABS
+for (i in 1:nrow(LitChem_curated)){
+  if (is.na(LitChem_curated$ABS_extraction[i])&is.na(LitChem_curated$ABS_release[i])&is.na(LitChem_curated$ABS_unclear[i])){
+    LitChem_curated$ABS[i] = NA
+  }
+  else {
+    if (!is.na(LitChem_curated$ABS_release[i] = 1)){
+      LitChem_curated$ABS[i] = 2
+    }
+    else{
+      if (LitChem_curated$ABS_extraction[i] = 1) {
+      LitChem_curated$ABS[i] = 1
+      }
+      else {
+        if (LitChem_curated$ABS_unclear[i] = 0.5){
+          LitChem_curated$ABS[i] = 0.5
+        }
+    }
+  }
+  }
+}
+
+#ABS
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$ABS_extraction[i])&is.na(LitChem_curated$ABS_release[i])&is.na(LitChem_curated$ABS_unclear[i])){
+    LitChem_curated$ABS[i]=NA
+  }
+  else{
+   LitChem_curated$ABS[i]=max(c(LitChem_curated$ABS_extraction[i],LitChem_curated$ABS_release[i],LitChem_curated$ABS_unclear[i],na.rm=TRUE)) 
+  }
+}
+#ASA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$ASA_extraction[i])&is.na(LitChem_curated$ASA_release[i])){
+    LitChem_curated$ASA[i]=NA
+  }
+  else{
+   LitChem_curated$ASA[i]=max(c(LitChem_curated$ASA_extraction[i],LitChem_curated$ASA_release[i],na.rm=TRUE)) 
+  }
+}
+#BPC
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$BPC_extraction[i])){
+    LitChem_curated$BPC[i]=NA
+  }
+  else{
+   LitChem_curated$BPC[i]=max(c(LitChem_curated$BPC_extraction[i],na.rm=TRUE)) 
+  }
+}
+#Cellophane
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Cellophane_extraction[i])){
+    LitChem_curated$Cellophane[i]=NA
+  }
+  else{
+   LitChem_curated$Cellophane[i]=max(c(LitChem_curated$Cellophane_extraction[i],na.rm=TRUE)) 
+  }
+}
+#Cellulose
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Cellulose_acetate_extraction[i]) & LitChem_curated$Cellulose_derivate_release[i] & LitChem_curated$Cellulose_nitrate_release[i]){
+    LitChem_curated$Cellulose[i]=NA
+  }
+  else{
+   LitChem_curated$Cellulose[i]=max(c(LitChem_curated$Cellulose_acetate_extraction[i],LitChem_curated$Cellulose_derivate_release[i],LitChem_curated$Cellulose_nitrate_release[i],na.rm=TRUE)) 
+  }
+}
+#EPS
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$EPS_extraction[i])){
+    LitChem_curated$EPS[i]=NA
+  }
+  else{
+   LitChem_curated$EPS[i]=max(c(LitChem_curated$EPS_extraction[i],na.rm=TRUE)) 
+  }
+}
+#EVA (incl. VAE)
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$EVA_extraction[i])&is.na(LitChem_curated$VAE_release[i])){
+    LitChem_curated$EVA[i]=NA
+  }
+  else{
+   LitChem_curated$EVA[i]=max(c(LitChem_curated$EVA_extraction[i], LitChem_curated$VAE_release[i], na.rm=TRUE)) 
+  }
+}
+#EVOH
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$EVOH_unknown[i])){
+    LitChem_curated$EVOH[i]=NA
+  }
+  else{
+   LitChem_curated$EVOH[i]=max(c(LitChem_curated$EVOH_unknown[i],na.rm=TRUE)) 
+  }
+}
+#HDPE
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$HDPE_extraction[i])&is.na(LitChem_curated$HDPE_leaching[i])&is.na(LitChem_curated$HDPE_unknown[i])){
+    LitChem_curated$HDPE[i]=NA
+  }
+  else{
+   LitChem_curated$HDPE[i]=max(c(LitChem_curated$HDPE_extraction[i],LitChem_curated$HDPE_leaching[i],LitChem_curated$HDPE_unknown[i],na.rm=TRUE)) 
+  }
+}
+#HIPS
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$HIPS_extraction[i])&is.na(LitChem_curated$HIPS_unknown[i])){
+    LitChem_curated$HIPS[i]=NA
+  }
+  else{
+   LitChem_curated$HIPS[i]=max(c(LitChem_curated$HIPS_extraction[i],LitChem_curated$HIPS_unknown[i],na.rm=TRUE)) 
+  }
+}
+#LDPE
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$LDPE_extraction[i])&is.na(LitChem_curated$LDPE_leaching[i])&is.na(LitChem_curated$LDPE_unknown[i])){
+    LitChem_curated$LDPE[i]=NA
+  }
+  else{
+   LitChem_curated$LDPE[i]=max(c(LitChem_curated$LDPE_extraction[i],LitChem_curated$LDPE_leaching[i],LitChem_curated$LDPE_unknown[i],na.rm=TRUE)) 
+  }
+}
+#Multilayer
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Multilayer_extraction[i])&is.na(LitChem_curated$Multilayer_leaching[i])&is.na(LitChem_curated$Multilayer_unknown[i])){
+    LitChem_curated$Multilayer[i]=NA
+  }
+  else{
+   LitChem_curated$Multilayer[i]=max(c(LitChem_curated$Multilayer_extraction[i],LitChem_curated$Multilayer_leaching[i],LitChem_curated$Multilayer_unknown[i],na.rm=TRUE)) 
+  }
+}
+#PA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PA_extraction[i])&is.na(LitChem_curated$PA_leaching[i])&is.na(LitChem_curated$PA_unknown[i])){
+    LitChem_curated$PA[i]=NA
+  }
+  else{
+   LitChem_curated$PA[i]=max(c(LitChem_curated$PA_extraction[i],LitChem_curated$PA_leaching[i],LitChem_curated$PA_unknown[i],na.rm=TRUE))
+  }
+}
+#PAA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PAA_extraction[i])){
+    LitChem_curated$PAA[i]=NA
+  }
+  else{
+   LitChem_curated$PAA[i]=max(c(LitChem_curated$PAA_extraction[i],na.rm=TRUE))
+  }
+}
+#PAN
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PAN_extraction[i])&is.na(LitChem_curated$PAN_leaching[i])){
+    LitChem_curated$PAN[i]=NA
+  }
+  else{
+   LitChem_curated$PAN[i]=max(c(LitChem_curated$PAN_extraction[i],LitChem_curated$PAN_leaching[i],na.rm=TRUE))
+  }
+}
+#PB -> PB_1
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PB_extraction[i])&is.na(LitChem_curated$PB_leaching[i])){
+    LitChem_curated$PB_1[i]=NA
+  }
+  else{
+   LitChem_curated$PB_1[i]=max(c(LitChem_curated$PB_extraction[i],LitChem_curated$PB_leaching[i],na.rm=TRUE))
+  }
+}
+#PBAT
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PBAT_extraction[i])){
+    LitChem_curated$PBAT[i]=NA
+  }
+  else{
+   LitChem_curated$PBAT[i]=max(c(LitChem_curated$PBAT_extraction[i],na.rm=TRUE))
+  }
+}
+#PBS
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PBS_extraction[i])){
+    LitChem_curated$PBS[i]=NA
+  }
+  else{
+   LitChem_curated$PBS[i]=max(c(LitChem_curated$PBS_extraction[i],na.rm=TRUE))
+  }
+}
+#PBT
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PBT_extraction[i])&is.na(LitChem_curated$PBT_unknown[i])){
+    LitChem_curated$PBT[i]=NA
+  }
+  else{
+   LitChem_curated$PBT[i]=max(c(LitChem_curated$PBT_extraction[i],LitChem_curated$PBT_unknown[i],na.rm=TRUE))
+  }
+}
+#PCL
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PCL_leaching[i])){
+    LitChem_curated$PCL[i]=NA
+  }
+  else{
+   LitChem_curated$PCL[i]=max(c(LitChem_curated$PCL_leaching[i],na.rm=TRUE))
+  }
+}
+#PCT
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PCT_extraction[i])){
+    LitChem_curated$PCT[i]=NA
+  }
+  else{
+   LitChem_curated$PCT[i]=max(c(LitChem_curated$PCT_extraction[i],na.rm=TRUE))
+  }
+}
+#PE
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PE_extraction[i])&is.na(LitChem_curated$PE_leaching[i])&is.na(LitChem_curated$PE_unknown[i])){
+    LitChem_curated$PE[i]=NA
+  }
+  else{
+   LitChem_curated$PE[i]=max(c(LitChem_curated$PE_extraction[i],LitChem_curated$PE_leaching[i],LitChem_curated$PE_unknown[i],na.rm=TRUE))
+  }
+}
+#PES
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PES_unknown[i])){
+    LitChem_curated$PES[i]=NA
+  }
+  else{
+   LitChem_curated$PES[i]=max(c(LitChem_curated$PES_unknown[i],na.rm=TRUE))
+  }
+}
+#PET
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PET_extraction[i])&is.na(LitChem_curated$PET_leaching[i])&is.na(LitChem_curated$PET_unknown[i])){
+    LitChem_curated$PET[i]=NA
+  }
+  else{
+   LitChem_curated$PET[i]=max(c(LitChem_curated$PET_extraction[i],LitChem_curated$PET_leaching[i],LitChem_curated$PET_unknown[i],na.rm=TRUE))
+  }
+}
+#PHA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PHA_extraction[i])&is.na(LitChem_curated$PHA_unknown[i])){
+    LitChem_curated$PHA[i]=NA
+  }
+  else{
+   LitChem_curated$PHA[i]=max(c(LitChem_curated$PHA_extraction[i],LitChem_curated$PHA_unknown[i],na.rm=TRUE))
+  }
+}
+#PLA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PLA_extraction[i])&is.na(LitChem_curated$PLA_unknown[i])){
+    LitChem_curated$PLA[i]=NA
+  }
+  else{
+   LitChem_curated$PLA[i]=max(c(LitChem_curated$PLA_extraction[i],LitChem_curated$PLA_unknown[i],na.rm=TRUE))
+  }
+}
+#PMMA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PMMA_extraction[i])&is.na(LitChem_curated$PMMA_leaching[i])){
+    LitChem_curated$PMMA[i]=NA
+  }
+  else{
+   LitChem_curated$PMMA[i]=max(c(LitChem_curated$PMMA_extraction[i],LitChem_curated$PMMA_leaching[i],na.rm=TRUE))
+  }
+}
+#POM
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$POM_extraction[i])){
+    LitChem_curated$POM[i]=NA
+  }
+  else{
+   LitChem_curated$POM[i]=max(c(LitChem_curated$POM_extraction[i],na.rm=TRUE))
+  }
+}
+#PP
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PP_extraction[i])&is.na(LitChem_curated$PP_leaching[i])&is.na(LitChem_curated$PP_unknown[i])){
+    LitChem_curated$PP[i]=NA
+  }
+  else{
+   LitChem_curated$PP[i]=max(c(LitChem_curated$PP_extraction[i],LitChem_curated$PP_leaching[i],LitChem_curated$PP_unknown[i],na.rm=TRUE))
+  }
+}
+#PPO
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PPO_extraction[i])){
+    LitChem_curated$PPO[i]=NA
+  }
+  else{
+   LitChem_curated$PPO[i]=max(c(LitChem_curated$PPO_extraction[i],na.rm=TRUE))
+  }
+}
+#PS
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PS_extraction[i])&is.na(LitChem_curated$PS_leaching[i])&is.na(LitChem_curated$PS_unknown[i])){
+    LitChem_curated$PS[i]=NA
+  }
+  else{
+   LitChem_curated$PS[i]=max(c(LitChem_curated$PS_extraction[i],LitChem_curated$PS_leaching[i],LitChem_curated$PS_unknown[i],na.rm=TRUE))
+  }
+}
+#PTFE
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PTFE_extraction[i])&is.na(LitChem_curated$PTFE_leaching[i])){
+    LitChem_curated$PTFE[i]=NA
+  }
+  else{
+   LitChem_curated$PTFE[i]=max(c(LitChem_curated$PTFE_extraction[i],LitChem_curated$PTFE_leaching[i],na.rm=TRUE))
+  }
+}
+#PUR
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PUR_extraction[i])&is.na(LitChem_curated$PUR_unknown[i])){
+    LitChem_curated$PUR[i]=NA
+  }
+  else{
+   LitChem_curated$PUR[i]=max(c(LitChem_curated$PUR_extraction[i],LitChem_curated$PUR_unknown[i],na.rm=TRUE))
+  }
+}
+#PVA
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PVA_extraction[i])){
+    LitChem_curated$PVA[i]=NA
+  }
+  else{
+   LitChem_curated$PVA[i]=max(c(LitChem_curated$PVA_extraction[i],na.rm=TRUE))
+  }
+}
+#PVC
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PVC_extraction[i])&is.na(LitChem_curated$PVC_leaching[i])&is.na(LitChem_curated$PVC_unknown[i])){
+    LitChem_curated$PVC[i]=NA
+  }
+  else{
+   LitChem_curated$PVC[i]=max(c(LitChem_curated$PVC_extraction[i],LitChem_curated$PVC_leaching[i],LitChem_curated$PVC_unknown[i],na.rm=TRUE))
+  }
+}
+#PVF
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PVF_extraction[i])){
+    LitChem_curated$PVF[i]=NA
+  }
+  else{
+   LitChem_curated$PVF[i]=max(c(LitChem_curated$PVF_extraction[i],na.rm=TRUE))
+  }
+}
+#Rubber
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Rubber_extraction[i])&is.na(LitChem_curated$Rubber_leaching[i])&is.na(LitChem_curated$Rubber_unknown[i])){
+    LitChem_curated$Rubber[i]=NA
+  }
+  else{
+   LitChem_curated$Rubber[i]=max(c(LitChem_curated$Rubber_extraction[i],LitChem_curated$Rubber_leaching[i],LitChem_curated$Rubber_unknown[i],na.rm=TRUE))
+  }
+}
+#SAN
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$SAN_extraction[i])&is.na(LitChem_curated$SAN_leaching[i])){
+    LitChem_curated$SAN[i]=NA
+  }
+  else{
+   LitChem_curated$SAN[i]=max(c(LitChem_curated$SAN_extraction[i],LitChem_curated$SAN_leaching[i],na.rm=TRUE))
+  }
+}
+#Starch
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Starch_extraction[i])){
+    LitChem_curated$Starch[i]=NA
+  }
+  else{
+   LitChem_curated$Starch[i]=max(c(LitChem_curated$Starch_extraction[i],na.rm=TRUE))
+  }
+}
+#Tritan
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Tritan_leaching[i])){
+    LitChem_curated$Tritan[i]=NA
+  }
+  else{
+   LitChem_curated$Tritan[i]=max(c(LitChem_curated$Tritan_leaching[i],na.rm=TRUE))
+  }
+}
+#Unknown
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$unknown_extraction[i])&is.na(LitChem_curated$unknown_leaching[i])&is.na(LitChem_curated$unknown_unknown[i])){
+    LitChem_curated$unknown[i]=NA
+  }
+  else{
+   LitChem_curated$unknown[i]=max(c(LitChem_curated$unknown_extraction[i],LitChem_curated$unknown_leaching[i],LitChem_curated$unknown_unknown[i],na.rm=TRUE))
+  }
+}
+#XPS
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$XPS_extraction[i])){
+    LitChem_curated$XPS[i]=NA
+  }
+  else{
+   LitChem_curated$XPS[i]=max(c(LitChem_curated$XPS_extraction[i],na.rm=TRUE))
+  }
+}
+#Silicone (incl. PDMS)
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Silicone_leaching[i])&is.na(LitChem_curated$PDMS_extraction[i])){
+    LitChem_curated$Silicone[i]=NA
+  }
+  else{
+   LitChem_curated$Silicone[i]=max(c(LitChem_curated$Silicone_leaching[i],LitChem_curated$PDMS_extraction[i],na.rm=TRUE))
+  }
+}
+#Unespecified Plastic (incl. SAP and other)
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$SAP_unknown[i])&is.na(LitChem_curated$Other_leaching[i])){
+    LitChem_curated$Unespecified_plastic[i]=NA
+  }
+  else{
+   LitChem_curated$Unespecified_plastic[i]=max(c(LitChem_curated$SAP_unknown[i],LitChem_curated$Other_leaching[i],na.rm=TRUE))
+  }
+}
+#PC
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$PC_extraction[i])&is.na(LitChem_curated$PC_leaching[i])&is.na(LitChem_curated$PC_unknown[i])){
+    LitChem_curated$PC[i]=NA
+  }
+  else{
+   LitChem_curated$PC[i]=max(c(LitChem_curated$PC_extraction[i],LitChem_curated$PC_leaching[i],LitChem_curated$PC_unknown[i],na.rm=TRUE))
+  }
+}
+#Bioplastic (incl. Silicone, PBAT, PBS, PHA, PLA, Starch)
+for (i in 1:nrow(LitChem_curated)){
+  if(is.na(LitChem_curated$Silicone_leaching[i])&is.na(LitChem_curated$PBAT_extraction[i])&is.na(LitChem_curated$PBS_extraction[i])&is.na(LitChem_curated$PHA_extraction[i])&is.na(LitChem_curated$PHA_unknown[i])&is.na(LitChem_curated$PLA_extraction[i])&is.na(LitChem_curated$PLA_unknown[i])&is.na(LitChem_curated$Starch_extraction[i])){
+    LitChem_curated$Bioplastic[i]=NA
+  }
+  else{
+   LitChem_curated$Bioplastic[i]=max(c(LitChem_curated$Silicone_leaching[i],LitChem_curated$PBAT_extraction[i],LitChem_curated$PBS_extraction[i],LitChem_curated$PHA_extraction[i],LitChem_curated$PHA_unknown[i],LitChem_curated$PLA_extraction[i],LitChem_curated$PLA_unknown[i],LitChem_curated$Starch_extraction[i],na.rm=TRUE))
+  }
+}
+
+write.csv(LitChem_curated,"LitChemx_curated_summary_migration_extraction_polymers.csv",row.names=FALSE)
+```
+
+#2.5 Check CAS with PlastChem and correct CAS accordingly 
+manual checking of CAS numbers -> see the file: LitChemx_curated_summary_migration_extraction_checked -> correct file: version corrected 
+
+##3.PLASTICMAP
+#3.1 Create new columns from the original file
+```{r}
+PlasticMap = read.csv(file.choose(),sep=",")#file: PlasticMap1_polymers_230922.csv
+nrow(PlasticMap)
+View(PlasticMap)
+summary(PlasticMap)
+
+#15 polymers in total --> we create new columns for each and 1 if the CAS is linked to this polymer, 0 otherwise
+
+#PET
+for (i in 1:nrow(PlasticMap)) { # for each row of our dataframe
+  # If we find the word "PET" in the column "plasticmap_polymer", the column "PET" = 1, otherwise the column "PET" = 0
+  if (grepl("PET", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PET[i] = 1
+  }
+  else {
+    PlasticMap$PET[i] = 0
+  }
+}
+#Other
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("Other", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$Other[i] = 1
+  }
+  else {
+    PlasticMap$Other[i] = 0
+  }
+}
+#Rubber
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("Rubber", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$Rubber[i] = 1
+  }
+  else {
+    PlasticMap$Rubber[i] = 0
+  }
+}
+#ABS
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("ABS", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$ABS[i] = 1
+  }
+  else {
+    PlasticMap$ABS[i] = 0
+  }
+}
+#PA
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("PA", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PA[i] = 1
+  }
+  else {
+    PlasticMap$PA[i] = 0
+  }
+}
+#PUR
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("PUR", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PUR[i] = 1
+  }
+  else {
+    PlasticMap$PUR[i] = 0
+  }
+}
+#LDPE
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("LDPE", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$LDPE[i] = 1
+  }
+  else {
+    PlasticMap$LDPE[i] = 0
+  }
+}
+#Bioplastic
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("Bioplastic", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$Bioplastic[i] = 1
+  }
+  else {
+    PlasticMap$Bioplastic[i] = 0
+  }
+}
+#PP
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("PP", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PP[i] = 1
+  }
+  else {
+    PlasticMap$PP[i] = 0
+  }
+}
+#HDPE
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("HDPE", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$HDPE[i] = 1
+  }
+  else {
+    PlasticMap$HDPE[i] = 0
+  }
+}
+#PVC
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("PVC", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PVC[i] = 1
+  }
+  else {
+    PlasticMap$PVC[i] = 0
+  }
+}
+#PC
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("PC", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PC[i] = 1
+  }
+  else {
+    PlasticMap$PC[i] = 0
+  }
+}
+#PS
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("PS", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$PS[i] = 1
+  }
+  else {
+    PlasticMap$PS[i] = 0
+  }
+}
+#EPS
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("EPS", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$EPS[i] = 1
+  }
+  else {
+    PlasticMap$EPS[i] = 0
+  }
+}
+#HIPS
+for (i in 1:nrow(PlasticMap)) { 
+  if (grepl("HIPS", PlasticMap$plasticmap_polymer[i], fixed=TRUE)){
+    PlasticMap$HIPS[i] = 1
+  }
+  else {
+    PlasticMap$HIPS[i] = 0
+  }
+}
+
+write.csv(PlasticMap,"PlasticMap_polymers.csv",row.names=FALSE)
+```
+
+##4. MERGING FCCMIGEX, LITCHEM, PLASTICMAP
+#4.1 Merge the three dbs
+```{r}
+FCCMIGEX = read.csv (file.choose(),sep=",") #file: FCCmigex_split_and_curated_summary_migration_extraction_polymers_checked2
+nrow(FCCMIGEX)
+ncol(FCCMIGEX)
+View(FCCMIGEX)
+names(FCCMIGEX)
+
+LITCHEM = read.csv (file.choose(),sep=",")#file: LitChemx_curated_summary_migration_extraction_checked
+nrow(LITCHEM)
+ncol(LITCHEM)
+View(LITCHEM)
+names(LITCHEM)
+
+PLASTICMAP = read.csv (file.choose(), sep=",")#file: PlasticMap_polymers.csv
+nrow(PLASTICMAP)
+ncol(PLASTICMAP)
+View(PLASTICMAP)
+names(PLASTICMAP)
+
+
+#First merge FCCmigex and LitChem = HIGH EVIDENCE 
+MIGEX_LITCHEM = merge(FCCMIGEX, LITCHEM, by="CAS", all =T)
+nrow(MIGEX_LITCHEM)
+ncol(MIGEX_LITCHEM)
+
+write.csv(MIGEX_LITCHEM,"FCCMigex_LitChem_mod2.csv",row.names=FALSE)
+#->correct the CAS numbers manually
+
+##Clean dbs
+#homogenize terms between LitChem and Migex
+DB = read.csv (file.choose(),na.strings="NA",sep=",",dec=",") #file:FCCMigex_LitChem_mod2_corrected.csv. Corrected PET from FCCMigex and unknown from LITCHEM manually (18.10.23)
+nrow(DB)
+ncol(DB)
+View(DB)
+names(DB)
+
+#as numeric
+#MIGEX
+DB$Melamine_Extraction<-as.numeric(DB$Melamine_Extraction)
+DB$Melamine_Migration_food<-as.numeric(DB$Melamine_Migration_food)
+DB$Melamine_Migration_food_simulants<-as.numeric(DB$Melamine_Migration_food_simulants)
+
+DB$Multilayer_Extraction<-as.numeric(DB$Multilayer_Extraction)
+DB$Multilayer_Migration_food<-as.numeric(DB$Multilayer_Migration_food)
+DB$Multilayer_Migration_food_simulants<-as.numeric(DB$Multilayer_Migration_food_simulants)
+
+DB$PA_Extraction<-as.numeric(DB$PA_Extraction)
+DB$PA_Migration_food<-as.numeric(DB$PA_Migration_food)
+DB$PA_Migration_food_simulants<-as.numeric(DB$PA_Migration_food_simulants)
+
+DB$PC_Extraction<-as.numeric(DB$PC_Extraction)
+DB$PC_Migration_food<-as.numeric(DB$PC_Migration_food)
+DB$PC_Migration_food_simulants<-as.numeric(DB$PC_Migration_food_simulants)
+
+DB$PE_Extraction<-as.numeric(DB$PE_Extraction)
+DB$PE_Migration_food<-as.numeric(DB$PE_Migration_food)
+DB$PE_Migration_food_simulants<-as.numeric(DB$PE_Migration_food_simulants)
+
+DB$PET_Extraction<-as.numeric(DB$PET_Extraction)
+DB$PET_Migration_food<-as.numeric(DB$PET_Migration_food)
+DB$PET_Migration_food_simulants<-as.numeric(DB$PET_Migration_food_simulants)
+
+DB$PLA_Extraction<-as.numeric(DB$PLA_Extraction)
+DB$PLA_Migration_food_simulants<-as.numeric(DB$PLA_Migration_food_simulants)
+
+DB$unespecified_plastic_Extraction<-as.numeric(DB$unespecified_plastic_Extraction)
+DB$unespecified_plastic_Migration_food<-as.numeric(DB$unespecified_plastic_Migration_food)
+DB$unespecified_plastic_Migration_food_simulants<-as.numeric(DB$unespecified_plastic_Migration_food_simulants)
+
+DB$PP_Extraction<-as.numeric(DB$PP_Extraction)
+DB$PP_Migration_food<-as.numeric(DB$PP_Migration_food)
+DB$PP_Migration_food_simulants<-as.numeric(DB$PP_Migration_food_simulants)
+
+DB$PS_Extraction<-as.numeric(DB$PS_Extraction)
+DB$PS_Migration_food<-as.numeric(DB$PS_Migration_food)
+DB$PS_Migration_food_simulants<-as.numeric(DB$PS_Migration_food_simulants)
+
+DB$PUR_Extraction<-as.numeric(DB$PUR_Extraction)
+DB$PUR_Migration_food<-as.numeric(DB$PUR_Migration_food)
+DB$PUR_Migration_food_simulants<-as.numeric(DB$PUR_Migration_food_simulants)
+
+DB$PVC_Extraction<-as.numeric(DB$PVC_Extraction)
+DB$PVC_Migration_food<-as.numeric(DB$PVC_Migration_food)
+DB$PVC_Migration_food_simulants<-as.numeric(DB$PVC_Migration_food_simulants)
+
+DB$RecPET_Extraction<-as.numeric(DB$RecPET_Extraction)
+DB$RecPET_Migration_food<-as.numeric(DB$RecPET_Migration_food)
+DB$RecPET_Migration_food_simulants<-as.numeric(DB$RecPET_Migration_food_simulants)
+
+DB$Extraction.x<-as.numeric(DB$Extraction.x)
+DB$Migration<-as.numeric(DB$Migration)
+
+#LITCHEM
+DB$ABS_extraction<-as.numeric(DB$ABS_extraction)
+DB$ABS_release<-as.numeric(DB$ABS_release)
+DB$ABS_unclear<-as.numeric(DB$ABS_unclear)
+
+DB$ASA_extraction<-as.numeric(DB$ASA_extraction)
+DB$ASA_release<-as.numeric(DB$ASA_release)
+
+DB$BPC_extraction<-as.numeric(DB$BPC_extraction)
+
+DB$cellophane_extraction<-as.numeric(DB$cellophane_extraction)
+
+DB$cellulose_acetate_extraction<-as.numeric(DB$cellulose_acetate_extraction)
+DB$cellulose_release<-as.numeric(DB$cellulose_release)
+DB$cellulose_derivate_release<-as.numeric(DB$cellulose_derivate_release)
+DB$cellulose_nitrate_release<-as.numeric(DB$cellulose_nitrate_release)
+
+DB$EPS_extraction<-as.numeric(DB$EPS_extraction)
+
+DB$EVA_extraction<-as.numeric(DB$EVA_extraction)
+
+DB$EVOH_unclear<-as.numeric(DB$EVOH_unclear)
+
+DB$HDPE_extraction<-as.numeric(DB$HDPE_extraction)
+DB$HDPE_release<-as.numeric(DB$HDPE_release)
+DB$HDPE_unclear<-as.numeric(DB$HDPE_unclear)
+
+DB$HIPS_extraction<-as.numeric(DB$HIPS_extraction)
+DB$HIPS_unclear<-as.numeric(DB$HIPS_unclear)
+
+DB$LDPE_extraction<-as.numeric(DB$LDPE_extraction)
+DB$LDPE_release<-as.numeric(DB$LDPE_release)
+DB$LDPE_unclear<-as.numeric(DB$LDPE_unclear)
+
+DB$Multilayer_extraction<-as.numeric(DB$Multilayer_extraction)
+DB$Multilayer_release<-as.numeric(DB$Multilayer_release)
+DB$Multilayer_unclear<-as.numeric(DB$Multilayer_unclear)
+
+DB$Other_release<-as.numeric(DB$Other_release)
+
+DB$PA_extraction<-as.numeric(DB$PA_extraction)
+DB$PA_release<-as.numeric(DB$PA_release)
+DB$PA_unclear<-as.numeric(DB$PA_unclear)
+
+DB$PAA_release<-as.numeric(DB$PAA_release)
+
+DB$PAN_extraction<-as.numeric(DB$PAN_extraction)
+DB$PAN_release<-as.numeric(DB$PAN_release)
+
+DB$PB_release<-as.numeric(DB$PB_release)
+
+DB$PBAT_extraction<-as.numeric(DB$PBAT_extraction)
+
+DB$PBS_extraction<-as.numeric(DB$PBS_extraction)
+
+DB$PBT_extraction<-as.numeric(DB$PBT_extraction)
+DB$PBT_release<-as.numeric(DB$PBT_release)
+DB$PBT_unclear<-as.numeric(DB$PBT_unclear)
+
+DB$PC_extraction<-as.numeric(DB$PC_extraction)
+DB$PC_release<-as.numeric(DB$PC_release)
+DB$PC_unclear<-as.numeric(DB$PC_unclear)
+
+DB$PCL_release<-as.numeric(DB$PCL_release)
+
+DB$PCT_release<-as.numeric(DB$PCT_release)
+
+DB$PDMS_extraction<-as.numeric(DB$PDMS_extraction)
+
+DB$PE_extraction<-as.numeric(DB$PE_extraction)
+DB$PE_release<-as.numeric(DB$PE_release)
+DB$PE_unclear<-as.numeric(DB$PE_unclear)
+
+DB$PET_extraction<-as.numeric(DB$PET_extraction)
+DB$PET_release<-as.numeric(DB$PET_release)
+DB$PET_unclear<-as.numeric(DB$PET_unclear)
+
+DB$PHA_extraction<-as.numeric(DB$PHA_extraction)
+DB$PHA_unclear<-as.numeric(DB$PHA_unclear)
+
+DB$PLA_extraction<-as.numeric(DB$PLA_extraction)
+DB$PLA_unclear<-as.numeric(DB$PLA_unclear)
+
+DB$PMMA_extraction<-as.numeric(DB$PMMA_extraction)
+DB$PMMA_release<-as.numeric(DB$PMMA_release)
+
+DB$POM_release<-as.numeric(DB$POM_release)
+
+DB$PP_extraction<-as.numeric(DB$PP_extraction)
+DB$PP_release<-as.numeric(DB$PP_release)
+DB$PP_unclear<-as.numeric(DB$PP_unclear)
+
+DB$PPO_release<-as.numeric(DB$PPO_release)
+
+DB$PS_extraction<-as.numeric(DB$PS_extraction)
+DB$PS_release<-as.numeric(DB$PS_release)
+DB$PS_unclear<-as.numeric(DB$PS_unclear)
+
+DB$PTFE_extraction<-as.numeric(DB$PTFE_extraction)
+DB$PTFE_release<-as.numeric(DB$PTFE_release)
+
+DB$PUR_extraction<-as.numeric(DB$PUR_extraction)
+DB$PUR_release<-as.numeric(DB$PUR_release)
+DB$PUR_unclear<-as.numeric(DB$PUR_unclear)
+
+DB$PVA_release<-as.numeric(DB$PVA_release)
+
+DB$PVC_extraction<-as.numeric(DB$PVC_extraction)
+DB$PVC_release<-as.numeric(DB$PVC_release)
+DB$PVC_unclear<-as.numeric(DB$PVC_unclear)
+
+DB$PVF_release<-as.numeric(DB$PVF_release)
+
+DB$rubber_extraction<-as.numeric(DB$rubber_extraction)
+DB$rubber_release<-as.numeric(DB$rubber_release)
+
+DB$SAN_release<-as.numeric(DB$SAN_release)
+
+DB$SAP_unclear<-as.numeric(DB$SAP_unclear)
+
+DB$Silicone_release<-as.numeric(DB$Silicone_release)
+
+DB$Starch_extraction<-as.numeric(DB$Starch_extraction)
+DB$Starch_release<-as.numeric(DB$Starch_release)
+
+DB$Tritan_release<-as.numeric(DB$Tritan_release)
+
+DB$VAE_release<-as.numeric(DB$VAE_release)
+
+DB$XPS_extraction<-as.numeric(DB$XPS_extraction)
+
+DB$unknown<-as.numeric(DB$unknown)
+DB$Extraction.y<-as.numeric(DB$Extraction.y)
+DB$Release<-as.numeric(DB$Release)
+DB$Unclear<-as.numeric(DB$Unclear)
+
+#SCORING
+#multilayer
+DB <- DB %>% 
+  mutate(Multilayer_E=case_when(Multilayer_Extraction == 1~1,
+                                Multilayer_extraction ==1~1,
+                                Multilayer_Extraction ==0.5 ~ 0.5,
+                                Multilayer_extraction ==0.5~ 0.5,
+                                Multilayer_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(Multilayer_R=case_when(Multilayer_Migration_food == 1~1,
+                                Multilayer_Migration_food_simulants ==1~1,
+                                Multilayer_release == 1~1,
+                                Multilayer_Migration_food ==0.5~0.5,
+                                Multilayer_Migration_food_simulants ==0.5~0.5,
+                                Multilayer_release == 0.5~0.5,
+                                Multilayer_Migration_food ==0 ~ 0,
+                                Multilayer_Migration_food_simulants ==0~ 0,
+                                Multilayer_release ==0 ~0))
+#melamine
+DB <- DB %>%
+  mutate(Melamine_E=case_when(Melamine_Extraction == 1~1,
+                              Melamine_Extraction ==0.5~0.5,
+                              Melamine_Extraction == 0~0))
+DB <- DB %>% 
+  mutate(Melamine_R=case_when(Melamine_Migration_food == 1~1,
+                              Melamine_Migration_food_simulants ==1~1,
+                              Melamine_Migration_food ==0.5~0.5,
+                              Melamine_Migration_food_simulants ==0.5~0.5,
+                              Melamine_Migration_food ==0 ~ 0,
+                              Melamine_Migration_food_simulants ==0~ 0))
+#PA
+DB <- DB %>% 
+  mutate(PA_E=case_when(PA_Extraction == 1~1,
+                        PA_extraction ==1~1,
+                        PA_Extraction ==0.5 ~ 0.5,
+                        PA_extraction ==0.5~ 0.5,
+                        PA_Extraction ==0 ~0))
+
+DB <- DB %>% 
+  mutate(PA_R=case_when(PA_Migration_food == 1~1,
+                        PA_Migration_food_simulants ==1~1,
+                        PA_release == 1~1,
+                        PA_Migration_food ==0.5~0.5,
+                        PA_Migration_food_simulants ==0.5~0.5,
+                        PA_release == 0.5~0.5,
+                        PA_Migration_food ==0 ~ 0,
+                        PA_Migration_food_simulants ==0~ 0,
+                        PA_release ==0 ~0))
+#PC
+DB <- DB %>% 
+  mutate(PC_E=case_when(PC_Extraction == 1~1,
+                        PC_extraction ==1~1,
+                        PC_Extraction ==0.5 ~ 0.5,
+                        PC_extraction ==0.5~ 0.5,
+                        PC_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PC_R=case_when(PC_Migration_food == 1~1,
+                        PC_Migration_food_simulants ==1~1,
+                        PC_release == 1~1,
+                        PC_Migration_food ==0.5~0.5,
+                        PC_Migration_food_simulants ==0.5~0.5,
+                        PC_release == 0.5~0.5,
+                        PC_Migration_food ==0 ~ 0,
+                        PC_Migration_food_simulants ==0~ 0,
+                        PC_release ==0 ~0))
+#PE
+DB <- DB %>% 
+  mutate(PE_E=case_when(PE_Extraction == 1~1,
+                        PE_extraction ==1~1,
+                        PE_Extraction ==0.5 ~ 0.5,
+                        PE_extraction ==0.5~ 0.5,
+                        PE_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PE_R=case_when(PE_Migration_food == 1~1,
+                        PE_Migration_food_simulants ==1~1,
+                        PE_release == 1~1,
+                        PE_Migration_food ==0.5~0.5,
+                        PE_Migration_food_simulants ==0.5~0.5,
+                        PE_release == 0.5~0.5,
+                        PE_Migration_food ==0 ~ 0,
+                        PE_Migration_food_simulants ==0~ 0,
+                        PE_release ==0 ~0))
+#PET (incl. recPET)
+DB <- DB %>% 
+  mutate(PET_E=case_when(PET_Extraction == 1~1,
+                         PET_extraction ==1~1,
+                         RecPET_Extraction==1~1,
+                         PET_Extraction ==0.5 ~ 0.5,
+                         PET_extraction ==0.5~ 0.5,
+                         RecPET_Extraction==0.5~0.5,
+                         PET_Extraction ==0 ~0,
+                         RecPET_Extraction==0~0))
+DB <- DB %>% 
+  mutate(PET_R=case_when(PET_Migration_food == 1~1,
+                         PET_Migration_food_simulants ==1~1,
+                         PET_release == 1~1,
+                         RecPET_Migration_food==1~1,
+                         RecPET_Migration_food_simulants==1~1,
+                         PET_Migration_food ==0.5~0.5,
+                         PET_Migration_food_simulants ==0.5~0.5,
+                         PET_release == 0.5~0.5,
+                         RecPET_Migration_food==0.5~0.5,
+                         RecPET_Migration_food_simulants==0.5~0.5,
+                         PET_Migration_food ==0 ~ 0,
+                         PET_Migration_food_simulants ==0~ 0,
+                         PET_release ==0 ~0,
+                         RecPET_Migration_food==0~0,
+                         RecPET_Migration_food_simulants==0~0))
+#PLA
+DB <- DB %>% 
+  mutate(PLA_E=case_when(PLA_Extraction == 1~1,
+                         PLA_extraction == 1~1,
+                         PLA_Extraction ==0.5 ~ 0.5,
+                         PLA_extraction ==0.5 ~ 0.5,
+                         PLA_Extraction ==0 ~0,
+                         PLA_extraction == 0~0))
+DB <- DB %>% 
+  mutate(PLA_R=case_when(PLA_Migration_food_simulants == 1~1,
+                         PLA_Migration_food_simulants ==0.5 ~ 0.5,
+                         PLA_Migration_food_simulants ==0 ~0))
+#unespecific plastic (incl Other)
+DB <- DB %>% 
+  mutate(unespecified_plastic_E=case_when(unespecified_plastic_Extraction == 1~1,
+                                          unespecified_plastic_Extraction == 0.5~0.5,
+                                          unespecified_plastic_Extraction == 0~0))
+DB <- DB %>% 
+  mutate(unespecified_plastic_R=case_when(unespecified_plastic_Migration_food == 1~1,
+                                          unespecified_plastic_Migration_food_simulants == 1~1,
+                                          Other_release == 1~1,
+                                          unespecified_plastic_Migration_food == 0.5~0.5,
+                                          unespecified_plastic_Migration_food_simulants == 0.5~0.5,
+                                          Other_release ==0.5~0.5,
+                                          unespecified_plastic_Migration_food == 0~0,
+                                          unespecified_plastic_Migration_food_simulants == 0~0,
+                                          Other_release == 0~0))
+#PP
+DB <- DB %>% 
+  mutate(PP_E=case_when(PP_Extraction == 1~1,
+                        PP_extraction ==1~1,
+                        PP_Extraction ==0.5 ~ 0.5,
+                        PP_extraction ==0.5~ 0.5,
+                        PP_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PP_R=case_when(PP_Migration_food == 1~1,
+                        PP_Migration_food_simulants ==1~1,
+                        PP_release == 1~1,
+                        PP_Migration_food ==0.5~0.5,
+                        PP_Migration_food_simulants ==0.5~0.5,
+                        PP_release == 0.5~0.5,
+                        PP_Migration_food ==0 ~ 0,
+                        PP_Migration_food_simulants ==0~ 0,
+                        PP_release ==0 ~0))
+#PS
+DB <- DB %>% 
+  mutate(PS_E=case_when(PS_Extraction == 1~1,
+                        PS_extraction ==1~1,
+                        PS_Extraction ==0.5 ~ 0.5,
+                        PS_extraction ==0.5~ 0.5,
+                        PS_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PS_R=case_when(PS_Migration_food == 1~1,
+                        PS_Migration_food_simulants ==1~1,
+                        PS_release == 1~1,
+                        PS_Migration_food ==0.5~0.5,
+                        PS_Migration_food_simulants ==0.5~0.5,
+                        PS_release == 0.5~0.5,
+                        PS_Migration_food ==0 ~ 0,
+                        PS_Migration_food_simulants ==0~ 0,
+                        PS_release ==0 ~0))
+#PUR
+DB <- DB %>% 
+  mutate(PUR_E=case_when(PUR_Extraction == 1~1,
+                         PUR_extraction ==1~1,
+                         PUR_Extraction ==0.5 ~ 0.5,
+                         PUR_extraction ==0.5~ 0.5,
+                         PUR_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PUR_R=case_when(PUR_Migration_food == 1~1,
+                         PUR_Migration_food_simulants ==1~1,
+                         PUR_release == 1~1,
+                         PUR_Migration_food ==0.5~0.5,
+                         PUR_Migration_food_simulants ==0.5~0.5,
+                         PUR_release == 0.5~0.5,
+                         PUR_Migration_food ==0 ~ 0,
+                         PUR_Migration_food_simulants ==0~ 0,
+                         PUR_release ==0 ~0))
+#PVC
+DB <- DB %>% 
+  mutate(PVC_E=case_when(PVC_Extraction == 1~1,
+                         PVC_extraction ==1~1,
+                         PVC_Extraction ==0.5 ~ 0.5,
+                         PVC_extraction ==0.5~ 0.5,
+                         PVC_Extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PVC_R=case_when(PVC_Migration_food == 1~1,
+                         PVC_Migration_food_simulants ==1~1,
+                         PVC_release == 1~1,
+                         PVC_Migration_food ==0.5~0.5,
+                         PVC_Migration_food_simulants ==0.5~0.5,
+                         PVC_release == 0.5~0.5,
+                         PVC_Migration_food ==0 ~ 0,
+                         PVC_Migration_food_simulants ==0~ 0,
+                         PVC_release ==0 ~0))
+#ABS
+DB <- DB %>% 
+  mutate(ABS_E=case_when(ABS_extraction == 1~1,
+                         ABS_extraction ==0.5 ~ 0.5,
+                         ABS_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(ABS_R=case_when(ABS_release == 1~1,
+                         ABS_release ==0.5 ~ 0.5,
+                         ABS_release ==0 ~0))
+#ASA
+DB <- DB %>% 
+  mutate(ASA_E=case_when(ASA_extraction == 1~1,
+                         ASA_extraction ==0.5 ~ 0.5,
+                         ASA_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(ASA_R=case_when(ASA_release == 1~1,
+                         ASA_release ==0.5 ~ 0.5,
+                         ASA_release ==0 ~0))
+#BPC
+DB <- DB %>% 
+  mutate(BPC_E=case_when(BPC_extraction == 1~1,
+                         BPC_extraction ==0.5 ~ 0.5,
+                         BPC_extraction ==0 ~0))
+#Cellophane
+DB <- DB %>% 
+  mutate(Cellophane_E=case_when(cellophane_extraction == 1~1,
+                                cellophane_extraction ==0.5 ~ 0.5,
+                                cellophane_extraction ==0 ~0))
+#Cellulose 
+DB <- DB %>% 
+  mutate(Cellulose_E=case_when(cellulose_acetate_extraction == 1~1,
+                               cellulose_acetate_extraction ==0.5 ~ 0.5,
+                               cellulose_acetate_extraction ==0 ~0))
+DB <- DB %>%
+  mutate(Cellulose_R=case_when(cellulose_release == 1~1,
+                               cellulose_derivate_release == 1~1,
+                               cellulose_nitrate_release == 1~1,
+                               cellulose_release == 0.5~0.5,
+                               cellulose_derivate_release == 0.5~0.5,
+                               cellulose_nitrate_release == 0.5~0.5,
+                               cellulose_release == 0~0,
+                               cellulose_derivate_release == 0~0,
+                               cellulose_nitrate_release == 0~0))
+#EPS
+DB <- DB %>% 
+  mutate(EPS_E=case_when(EPS_extraction == 1~1,
+                         EPS_extraction ==0.5 ~ 0.5,
+                         EPS_extraction ==0 ~0))
+#EVA (incl VAE in R)
+DB <- DB %>% 
+  mutate(EVA_E=case_when(EVA_extraction == 1~1,
+                         EVA_extraction ==0.5 ~ 0.5,
+                         EVA_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(EVA_R=case_when(VAE_release == 1~1,
+                         VAE_release ==0.5 ~ 0.5,
+                         VAE_release ==0 ~0))
+#HDPE
+DB <- DB %>% 
+  mutate(HDPE_E=case_when(HDPE_extraction == 1~1,
+                          HDPE_extraction ==0.5 ~ 0.5,
+                          HDPE_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(HDPE_R=case_when(HDPE_release == 1~1,
+                          HDPE_release ==0.5 ~ 0.5,
+                          HDPE_release ==0 ~0))
+#HIPS
+DB <- DB %>% 
+  mutate(HIPS_E=case_when(HIPS_extraction == 1~1,
+                          HIPS_extraction ==0.5 ~ 0.5,
+                          HIPS_extraction ==0 ~0))
+#LDPE
+DB <- DB %>% 
+  mutate(LDPE_E=case_when(LDPE_extraction == 1~1,
+                          LDPE_extraction ==0.5 ~ 0.5,
+                          LDPE_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(LDPE_R=case_when(LDPE_release == 1~1,
+                          LDPE_release ==0.5 ~ 0.5,
+                          LDPE_release ==0 ~0))
+#PAA
+DB <- DB %>% 
+  mutate(PAA_R=case_when(PAA_release == 1~1,
+                         PAA_release ==0.5 ~ 0.5,
+                         PAA_release ==0 ~0))
+#PAN
+DB <- DB %>% 
+  mutate(PAN_E=case_when(PAN_extraction == 1~1,
+                         PAN_extraction ==0.5 ~ 0.5,
+                         PAN_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PAN_R=case_when(PAN_release == 1~1,
+                         PAN_release ==0.5 ~ 0.5,
+                         PAN_release ==0 ~0))
+#PB
+DB <- DB %>% 
+  mutate(PB_R=case_when(PB_release == 1~1,
+                        PB_release ==0.5 ~ 0.5,
+                        PB_release ==0 ~0))
+#PBAT
+DB <- DB %>% 
+  mutate(PBAT_E=case_when(PBAT_extraction == 1~1,
+                          PBAT_extraction ==0.5 ~ 0.5,
+                          PBAT_extraction ==0 ~0))
+#PBS
+DB <- DB %>% 
+  mutate(PBS_E=case_when(PBS_extraction == 1~1,
+                         PBS_extraction ==0.5 ~ 0.5,
+                         PBS_extraction ==0 ~0))
+#PBT
+DB <- DB %>% 
+  mutate(PBT_E=case_when(PBT_extraction == 1~1,
+                         PBT_extraction ==0.5 ~ 0.5,
+                         PBT_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PBT_R=case_when(PBT_release == 1~1,
+                         PBT_release ==0.5 ~ 0.5,
+                         PBT_release ==0 ~0))
+#PCL
+DB <- DB %>% 
+  mutate(PCL_R=case_when(PCL_release == 1~1,
+                         PCL_release ==0.5 ~ 0.5,
+                         PCL_release ==0 ~0))
+#PCT
+DB <- DB %>% 
+  mutate(PCT_R=case_when(PCT_release == 1~1,
+                         PCT_release ==0.5 ~ 0.5,
+                         PCT_release ==0 ~0))
+#PDMS
+DB <- DB %>% 
+  mutate(PDMS_E=case_when(PDMS_extraction == 1~1,
+                          PDMS_extraction ==0.5 ~ 0.5,
+                          PDMS_extraction ==0 ~0))
+#PHA
+DB <- DB %>% 
+  mutate(PHA_E=case_when(PHA_extraction == 1~1,
+                         PHA_extraction ==0.5 ~ 0.5,
+                         PHA_extraction ==0 ~0))
+#PMMA
+DB <- DB %>% 
+  mutate(PMMA_E=case_when(PMMA_extraction == 1~1,
+                          PMMA_extraction ==0.5 ~ 0.5,
+                          PMMA_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PMMA_R=case_when(PMMA_release == 1~1,
+                          PMMA_release ==0.5 ~ 0.5,
+                          PMMA_release ==0 ~0))
+#POM
+DB <- DB %>% 
+  mutate(POM_R=case_when(POM_release == 1~1,
+                         POM_release ==0.5 ~ 0.5,
+                         POM_release ==0 ~0))
+#PPO
+DB <- DB %>% 
+  mutate(PPO_R=case_when(PPO_release == 1~1,
+                         PPO_release ==0.5 ~ 0.5,
+                         PPO_release ==0 ~0))
+#PTFE
+DB <- DB %>% 
+  mutate(PTFE_E=case_when(PTFE_extraction == 1~1,
+                          PTFE_extraction ==0.5 ~ 0.5,
+                          PTFE_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(PTFE_R=case_when(PTFE_release == 1~1,
+                          PTFE_release ==0.5 ~ 0.5,
+                          PTFE_release ==0 ~0))
+#PVA
+DB <- DB %>% 
+  mutate(PVA_R=case_when(PVA_release == 1~1,
+                         PVA_release ==0.5 ~ 0.5,
+                         PVA_release ==0 ~0))
+#PVF
+DB <- DB %>% 
+  mutate(PVF_R=case_when(PVF_release == 1~1,
+                         PVF_release ==0.5 ~ 0.5,
+                         PVF_release ==0 ~0))
+#rubber
+DB <- DB %>% 
+  mutate(rubber_E=case_when(rubber_extraction == 1~1,
+                            rubber_extraction ==0.5 ~ 0.5,
+                            rubber_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(rubber_R=case_when(rubber_release == 1~1,
+                            rubber_release ==0.5 ~ 0.5,
+                            rubber_release ==0 ~0))
+#SAN
+DB <- DB %>% 
+  mutate(SAN_R=case_when(SAN_release == 1~1,
+                         SAN_release ==0.5 ~ 0.5,
+                         SAN_release ==0 ~0))
+#Silicone
+DB <- DB %>% 
+  mutate(Silicone_R=case_when(Silicone_release == 1~1,
+                              Silicone_release ==0.5 ~ 0.5,
+                              Silicone_release ==0 ~0))
+#Starch
+DB <- DB %>% 
+  mutate(Starch_E=case_when(Starch_extraction == 1~1,
+                            Starch_extraction ==0.5 ~ 0.5,
+                            Starch_extraction ==0 ~0))
+DB <- DB %>% 
+  mutate(Starch_R=case_when(Starch_release == 1~1,
+                            Starch_release ==0.5 ~ 0.5,
+                            Starch_release ==0 ~0))
+#Tritan
+DB <- DB %>% 
+  mutate(Tritan_R=case_when(Tritan_release == 1~1,
+                            Tritan_release ==0.5 ~ 0.5,
+                            Tritan_release ==0 ~0))
+#XPS
+DB <- DB %>% 
+  mutate(XPS_E=case_when(XPS_extraction == 1~1,
+                         XPS_extraction ==0.5 ~ 0.5,
+                         XPS_extraction ==0 ~0))
+names(DB)
+
+#remove the extra columns that I have merged together to have a cleaned DB
+DB_cleaned = DB[,!(names(DB) %in% c("Melamine_Extraction","Melamine_Migration_food","Melamine_Migration_food_simulants","Melamine","Multilayer_Extraction","Multilayer_extraction","Multilayer_Migration_food","Multilayer_Migration_food_simulants","Multilayer_release","Multilayer","PA_Extraction","PA_extraction","PA","PA_Migration_food","PA_Migration_food_simulants","PA_release","PC_Extraction","PC_extraction","PC","PC_Migration_food","PC_Migration_food_simulants","PC_release","PE_Extraction","PE_extraction","PE","PE_Migration_food","PE_Migration_food_simulants","PE_release","PET_Extraction","PET_extraction","PET","PET_Migration_food","PET_Migration_food_simulants","PET_release","PLA_Extraction","PLA_extraction","PLA_Migration_food_simulants","PLA","PP_Extraction","PP_extraction","PP","PP_Migration_food","PP_Migration_food_simulants","PP_release","PS_Extraction","PS_extraction","PS","PS_Migration_food","PS_Migration_food_simulants","PS_release","PUR_Extraction","PUR_extraction","PUR","PUR_Migration_food","PUR_Migration_food_simulants","PUR_release","PVC_Extraction","PVC_extraction","PVC","PVC_Migration_food","PVC_Migration_food_simulants","PVC_release","RecPET_Extraction","RecPET_Migration_food","RecPET_Migration_food_simulants","unespecified_plastic_Extraction","unespecified_plastic","unespecified_plastic_Migration_food","unespecified_plastic_Migration_food_simulants","Other_release","ABS_extraction","ABS_release","ASA_extraction","ASA_release","BPC_extraction","cellophane_extraction","EPS_extraction","EVA_extraction","HDPE_extraction","HDPE_release","HIPS_extraction","LDPE_extraction","LDPE_release","PAA_release","PAN_extraction","PAN_release","PB_release","PBAT_extraction","PBAT_release","PBS_extraction","PBT_release","PBT_extraction","PBT_release","PCL_release","PCT_release","PDMS_extraction","PHA_extraction","PMMA_extraction","PMMA_release","POM_release","PPO_release","PTFE_extraction","PTFE_release","PVA_release","PVF_release","rubber_extraction","rubber_release","SAN_release","Silicone_release","Starch_extraction","Starch_release","Tritan_release","Starch_extraction","Starch_release","VAE_release","XPS_extraction","plastchem_v0.5_id","plasticmap_polymer","PET","Other","Rubber","ABS","PA","PUR","LDPE","Bioplastic","PP","HDPE","PVC","PC","PS","EPS","HIPS","cellulose_acetate_extraction","cellulose_release","cellulose_derivate_release","cellulose_nitrate_release"))] 
+
+names(DB_cleaned)
+
+#Second merge MIGEX_LITCHEM with PLASTICMAP = LOW EVIDENCE 
+DB_PFL = merge(DB_cleaned, PLASTICMAP, by="CAS", all =T)
+nrow(DB_PFL)
+ncol(DB_PFL)
+View(DB_PFL)
+
+write.csv(DB_PFL, file=file("FCCMigex_LitChem_PlasticMap2_fx.csv"), row.names=FALSE)
+
+```
+
+#4.2 Organize and homogenize the compiled db
+```{r}
+Polymers = read.csv (file.choose(),sep=",") #file: FCCMigex_LitChem_PlasticMap2_fx_checked.csv
+nrow(Polymers)
+ncol(Polymers)
+View(Polymers)
+names(Polymers)
+
+#Merge the information from the same polymer in: 2 Release, 1 Extraction, 0.5 PlasticMap, 0.25 unknown or unclear, 0 when 0, NA
+
+#Only when I have 1 in R is a 2. If I have a 0.5 (unclear release) then I don't count this except if it's the only score I have for that polymer, in this case it would be a 0.5
+
+#ABS
+Polymers <- Polymers %>% 
+  mutate(ABS_score=case_when(ABS_R == 1~2,
+                             ABS_E ==1 ~ 1,
+                             ABS_PM ==1 ~0.5,
+                             ABS_E == 0.5 ~ 0.25,
+                             ABS_R == 0.5 ~ 0.25,
+                             ABS_unclear == 1 ~ 0.25,
+                             ABS_E == 0 ~ 0,
+                             ABS_R == 0 ~ 0,
+                             ABS_unclear == 0 ~ 0))
+#ASA
+Polymers <- Polymers %>% 
+  mutate(ASA_score=case_when(ASA_R == 1~2,
+                             ASA_E ==1 ~ 1,
+                             ASA_E == 0.5 ~ 0.25,
+                             ASA_R == 0.5 ~ 0.25,
+                             ASA_E == 0 ~ 0,
+                             ASA_R == 0 ~ 0))
+#BPC
+Polymers <- Polymers %>% 
+  mutate(BPC_score=case_when(BPC_E ==1 ~ 1,
+                             BPC_E == 0.5 ~ 0.25,
+                             BPC_E == 0 ~ 0))
+#Cellophane
+Polymers <- Polymers %>% 
+  mutate(Cellophane_score=case_when(Cellophane_E ==1 ~ 1,
+                             Cellophane_E == 0.5 ~ 0.25,
+                             Cellophane_E == 0 ~ 0))
+#Cellulose
+Polymers <- Polymers %>% 
+  mutate(Cellulose_score=case_when(Cellulose_R == 1~2,
+                                   Cellulose_E == 1~1,
+                                   Cellulose_R == 0.5 ~ 0.25,
+                                   Cellulose_E == 0.5~0.25,
+                                   Cellulose_R == 0~0,
+                                   Cellulose_E ==0~0))
+#EPS
+Polymers <- Polymers %>% 
+  mutate(EPS_score=case_when(EPS_E ==1 ~ 1,
+                             EPS_PM ==1 ~ 0.5,
+                             EPS_E == 0.5 ~ 0.25,
+                             EPS_E == 0 ~ 0))
+#EVA
+Polymers <- Polymers %>% 
+  mutate(EVA_score=case_when(EVA_R == 1~2,
+                             EVA_E ==1 ~ 1,
+                             EVA_E == 0.5 ~ 0.25,
+                             EVA_R == 0.5 ~ 0.25,
+                             EVA_E == 0 ~ 0,
+                             EVA_R == 0 ~ 0))
+#EVOH
+Polymers <- Polymers %>% 
+  mutate(EVOH_score=case_when(EVOH_unclear == 1 ~ 0.25,
+                              EVOH_unclear == 0~0))
+#HDPE
+Polymers <- Polymers %>% 
+  mutate(HDPE_score=case_when(HDPE_R == 1~2,
+                             HDPE_E ==1 ~ 1,
+                             HDPE_PM ==1 ~0.5,
+                             HDPE_E == 0.5 ~ 0.25,
+                             HDPE_R == 0.5 ~ 0.25,
+                             HDPE_unclear == 1 ~ 0.25,
+                             HDPE_E == 0 ~ 0,
+                             HDPE_R == 0 ~ 0,
+                             HDPE_unclear == 0 ~ 0))
+#LDPE
+Polymers <- Polymers %>% 
+  mutate(LDPE_score=case_when(LDPE_R == 1~2,
+                             LDPE_E ==1 ~ 1,
+                             LDPE_PM ==1 ~0.5,
+                             LDPE_E == 0.5 ~ 0.25,
+                             LDPE_R == 0.5 ~ 0.25,
+                             LDPE_unclear == 1 ~ 0.25,
+                             LDPE_E == 0 ~ 0,
+                             LDPE_R == 0 ~ 0,
+                             LDPE_unclear == 0 ~ 0))
+#HIPS
+Polymers <- Polymers %>% 
+  mutate(LDPE_score=case_when(HIPS_E ==1 ~ 1,
+                             HIPS_PM ==1 ~0.5,
+                             HIPS_E == 0.5 ~0.25,
+                             HIPS_unclear == 1 ~ 0.25,
+                             HIPS_E == 0 ~ 0,
+                             HIPS_unclear == 0 ~ 0))
+#Melamine
+Polymers <- Polymers %>% 
+  mutate(Melamine_score=case_when(Melamine_R == 1~2,
+                             Melamine_E ==1 ~ 1,
+                             Melamine_E == 0.5 ~ 0.25,
+                             Melamine_R == 0.5 ~ 0.25,
+                             Melamine_E == 0 ~ 0,
+                             Melamine_R == 0 ~ 0))
+#Multilayer
+Polymers <- Polymers %>% 
+  mutate(Multilayer_score=case_when(Multilayer_R == 1~2,
+                             Multilayer_E ==1 ~ 1,
+                             Multilayer_E == 0.5 ~ 0.25,
+                             Multilayer_R == 0.5 ~ 0.25,
+                             Multilayer_unclear == 1 ~ 0.25,
+                             Multilayer_R == 0 ~ 0,
+                             Multilayer_E ==0 ~0,
+                             Multilayer_unclear ==0~0))
+#PA
+Polymers <- Polymers %>% 
+  mutate(PA_score=case_when(PA_R == 1~2,
+                            PA_E ==1 ~ 1,
+                            PA_PM ==1 ~0.5,
+                            PA_E == 0.5 ~ 0.25,
+                            PA_R == 0.5 ~ 0.25,
+                            PA_unclear == 1 ~ 0.25,
+                            PA_E == 0 ~ 0,
+                            PA_R == 0 ~ 0,
+                            PA_unclear == 0 ~ 0))
+#PAA
+Polymers <- Polymers %>% 
+  mutate(PAA_score=case_when(PAA_R == 1 ~ 2,
+                             PAA_R == 0.5~0.25,
+                             PAA_R == 0~0))
+#PAN
+Polymers <- Polymers %>% 
+  mutate(PAN_score=case_when(PAN_R == 1 ~ 2,
+                             PAN_E == 1~1,
+                             PAN_R == 0.5 ~0.25,
+                             PAN_E == 0.5~0.25,
+                             PAN_R == 0~0,
+                             PAN_E == 0~0))
+#PB
+Polymers <- Polymers %>% 
+  mutate(PB_score=case_when(PB_R == 1 ~ 2,
+                            PB_R == 0.5~0.25,
+                            PB_R == 0~0))
+#PBAT
+Polymers <- Polymers %>% 
+  mutate(PBAT_score=case_when(PBAT_E == 1 ~ 1,
+                              PBAT_E == 0.5~0.25,
+                              PBAT_E == 0~0))
+#PBS
+Polymers <- Polymers %>% 
+  mutate(PBS_score=case_when(PBS_E == 1 ~ 1,
+                             PBS_E == 0.5~0.25,
+                             PBS_E == 0~0))
+#PBT
+Polymers <- Polymers %>% 
+  mutate(PBT_score=case_when(PBT_R == 1 ~ 2,
+                             PBT_E == 1~1,
+                             PBT_R == 0.5 ~0.25,
+                             PBT_E == 0.5~0.25,
+                             PBT_unclear == 1~0.25,
+                             PBT_R == 0~0,
+                             PBT_E == 0~0,
+                             PBT_unclear == 0~0))
+#PC
+Polymers <- Polymers %>% 
+  mutate(PC_score=case_when(PC_R == 1 ~2,
+                            PC_E == 1~1,
+                            PC_PM == 1~0.5,
+                            PC_R == 0.5 ~0.25,
+                            PC_E == 0.5~0.25,
+                            PC_unclear == 1~0.25,
+                            PC_R == 0~0,
+                            PC_E == 0~0,
+                            PC_unclear == 0~0))
+#PCL
+Polymers <- Polymers %>% 
+  mutate(PCL_score=case_when(PCL_R == 1 ~ 2,
+                             PCL_R == 0.5~0.25,
+                             PCL_R == 0~0))
+#PCT
+Polymers <- Polymers %>% 
+  mutate(PCT_score=case_when(PCT_R == 1 ~ 2,
+                             PCT_R == 0.5~0.25,
+                             PCT_R == 0~0))
+#PCL
+Polymers <- Polymers %>% 
+  mutate(PCL_score=case_when(PCL_R == 1 ~ 2,
+                             PCL_R == 0.5~0.25,
+                             PCL_R == 0~0))
+#PDMS
+Polymers <- Polymers %>% 
+  mutate(PDMS_score=case_when(PDMS_E == 1 ~ 1,
+                              PDMS_E == 0.5~0.25,
+                              PDMS_E == 0~0))
+#PE
+Polymers <- Polymers %>% 
+  mutate(PE_score=case_when(PE_R == 1 ~ 2,
+                            PE_E == 1~1,
+                            PE_R == 0.5 ~0.25,
+                            PE_E == 0.5~0.25,
+                            PE_unclear == 1~0.25,
+                            PE_R == 0~0,
+                            PE_E == 0~0,
+                            PE_unclear == 0~0))
+#PES
+Polymers <- Polymers %>% 
+  mutate(PES_score=case_when(PES_unclear == 1 ~ 0.25,
+                             PES_unclear == 0~0))
+#PET
+Polymers <- Polymers %>% 
+  mutate(PET_score=case_when(PET_R == 1 ~2,
+                             PET_E == 1~1,
+                             PET_PM == 1~0.5,
+                             PET_R == 0.5 ~0.25,
+                             PET_E == 0.5~0.25,
+                             PET_unclear == 1~0.25,
+                             PET_R == 0~0,
+                             PET_E == 0~0,
+                             PET_unclear == 0~0))
+#PHA
+Polymers <- Polymers %>% 
+  mutate(PHA_score=case_when(PHA_E == 1 ~ 1,
+                             PHA_E == 0.5~0.25,
+                             PHA_unclear == 1~0.25,
+                             PHA_E == 0~0,
+                             PHA_unclear ==0~0))
+#PLA
+Polymers <- Polymers %>% 
+  mutate(PLA_score=case_when(PLA_R == 1 ~2,
+                             PLA_E == 1~1,
+                             PLA_R == 0.5 ~0.25,
+                             PLA_E == 0.5~0.25,
+                             PLA_unclear == 1~0.25,
+                             PLA_R == 0~0,
+                             PLA_E == 0~0,
+                             PLA_unclear == 0~0))
+#PMMA
+Polymers <- Polymers %>% 
+  mutate(PMMA_score=case_when(PMMA_R == 1~2,
+                              PMMA_E == 1~1,
+                              PMMA_R == 0.5~0.25,
+                              PMMA_E == 0.5~0.25,
+                              PMMA_R ==0~0,
+                              PMMA_E ==0~0))
+#POM
+Polymers <- Polymers %>% 
+  mutate(POM_score=case_when(POM_R == 1 ~ 2,
+                             POM_R == 0.5~0.25,
+                             POM_R == 0~0))
+#PP
+Polymers <- Polymers %>% 
+  mutate(PP_score=case_when(PP_R == 1 ~2,
+                            PP_E == 1~1,
+                            PP_PM == 1~0.5,
+                            PP_R == 0.5 ~0.25,
+                            PP_E == 0.5~0.25,
+                            PP_unclear == 1~0.25,
+                            PP_R == 0~0,
+                            PP_E == 0~0,
+                            PP_unclear == 0~0))
+#PPO
+Polymers <- Polymers %>% 
+  mutate(PPO_score=case_when(PPO_R == 1 ~ 2,
+                             PPO_R == 0.5~0.25,
+                             PPO_R == 0~0))
+#PS
+Polymers <- Polymers %>% 
+  mutate(PS_score=case_when(PS_R == 1 ~2,
+                            PS_E == 1~1,
+                            PS_PM == 1~0.5,
+                            PS_R == 0.5 ~0.25,
+                            PS_E == 0.5~0.25,
+                            PS_unclear == 1~0.25,
+                            PS_R == 0~0,
+                            PS_E == 0~0,
+                            PS_unclear == 0~0))
+#PTFE
+Polymers <- Polymers %>% 
+  mutate(PTFE_score=case_when(PTFE_R == 1~2,
+                              PTFE_E == 1~1,
+                              PTFE_R == 0.5~0.25,
+                              PTFE_E == 0.5~0.25,
+                              PTFE_R ==0~0,
+                              PTFE_E ==0~0))
+#PUR
+Polymers <- Polymers %>% 
+  mutate(PUR_score=case_when(PUR_R == 1 ~2,
+                             PUR_E == 1~1,
+                             PUR_PM == 1~0.5,
+                             PUR_R == 0.5 ~0.25,
+                             PUR_E == 0.5~0.25,
+                             PUR_unclear == 1~0.25,
+                             PUR_R == 0~0,
+                             PUR_E == 0~0,
+                             PUR_unclear == 0~0))
+#PVA
+Polymers <- Polymers %>% 
+  mutate(PVA_score=case_when(PVA_R == 1 ~ 2,
+                             PVA_R == 0.5~0.25,
+                             PVA_R == 0~0))
+#PVC
+Polymers <- Polymers %>% 
+  mutate(PVC_score=case_when(PVC_R == 1 ~2,
+                             PVC_E == 1~1,
+                             PVC_PM == 1~0.5,
+                             PVC_R == 0.5 ~0.25,
+                             PVC_E == 0.5~0.25,
+                             PVC_unclear == 1~0.25,
+                             PVC_R == 0~0,
+                             PVC_E == 0~0,
+                             PVC_unclear == 0~0))
+#PVF
+Polymers <- Polymers %>% 
+  mutate(PVF_score=case_when(PVF_R == 1 ~ 2,
+                             PVF_R == 0.5~0.25,
+                             PVF_R == 0~0))
+#Rubber
+Polymers <- Polymers %>% 
+  mutate(Rubber_score=case_when(rubber_R == 1~2,
+                                rubber_E == 1~1,
+                                Rubber_PM == 1~0.5,
+                                rubber_R == 0.5~0.25,
+                                rubber_E == 0.5~0.25,
+                                rubber_R ==0~0,
+                                rubber_E ==0~0))
+#SAN
+Polymers <- Polymers %>% 
+  mutate(SAN_score=case_when(SAN_R == 1 ~ 2,
+                             SAN_R == 0.5~0.25,
+                             SAN_R == 0~0))
+#SAP
+Polymers <- Polymers %>% 
+  mutate(SAP_score=case_when(SAP_unclear == 1 ~ 0.25,
+                             SAP_unclear == 0~0))
+#Silicone
+Polymers <- Polymers %>% 
+  mutate(Silicone_score=case_when(Silicone_R == 1 ~ 2,
+                                  Silicone_R== 0.5~0.25,
+                                  Silicone_R == 0~0))
+#Starch
+Polymers <- Polymers %>% 
+  mutate(Starch_score=case_when(Starch_R == 1~2,
+                                Starch_E == 1~1,
+                                Starch_R == 0.5~0.25,
+                                Starch_E == 0.5~0.25,
+                                Starch_R ==0~0,
+                                Starch_E ==0~0))
+#Tritan
+Polymers <- Polymers %>% 
+  mutate(Tritan_score=case_when(Tritan_R == 1 ~ 2,
+                                Tritan_R== 0.5~0.25,
+                                Tritan_R == 0~0))
+#XPS
+Polymers <- Polymers %>% 
+  mutate(XPS_score=case_when(XPS_E == 1 ~ 1,
+                             XPS_E == 0.5~0.25,
+                             XPS_E == 0~0))
+#Bioplastic -> incl. Bioplastic_PM, Silicone, PBAT, PBS, PHA, PLA, Starch
+for (i in 1:nrow(Polymers)){ 
+  if (is.na(Polymers$Bioplastic_PM[i])&is.na(Polymers$Silicone_score[i])&is.na(Polymers$PBAT_score[i])&is.na(Polymers$PBS_score[i])&is.na(Polymers$PHA_score[i])&is.na(Polymers$PLA_score[i])&is.na(Polymers$Starch_score[i])){
+    Polymers$Bioplastic[i]=NA
+  }
+    else {
+    Polymers$Bioplastic[i]=max(c(Polymers$Bioplastic_PM[i],Polymers$Silicone_score[i],Polymers$PBAT_score[i],Polymers$PBS_score[i],Polymers$PHA_score[i],Polymers$PLA_score[i],Polymers$Starch_score[i]), na.rm=TRUE)
+  }
+}
+#Other/Unespecific
+Polymers <- Polymers %>% 
+  mutate(unespecific_plastic_score=case_when(unespecified_plastic_R == 1~2,
+                                             unespecified_plastic_E == 1~1,
+                                             unespecified_plastic_R == 0.5 ~0.25,
+                                             unespecified_plastic_E == 0.5~0.25,
+                                             Other_PM == 1~0.25,
+                                             unespecified_plastic_R == 0~0,
+                                             unespecified_plastic_E == 0~0))
+#Unknown
+Polymers <- Polymers %>% 
+  mutate(Unknown_score=case_when(unknown == 1 ~ 1,
+                                 Unclear == 0.5~0.25))
+
+##merge E_migex and E_LitChem
+for (i in 1:nrow(Polymers)){ 
+  if (is.na(Polymers$Extraction.x[i])&is.na(Polymers$Extraction.y[i])){
+    Polymers$Extraction[i]=NA
+  }
+    else {
+    Polymers$Extraction[i]=max(c(Polymers$Extraction.x[i],Polymers$Extraction.y[i]), na.rm=TRUE)
+  }
+}
+names(Polymers)
+##merge R_migex and R_LitChem
+for (i in 1:nrow(Polymers)){ 
+  if (is.na(Polymers$Migration[i])&is.na(Polymers$Release[i])){
+    Polymers$R[i]=NA
+  }
+    else {
+    Polymers$R[i]=max(c(Polymers$Migration[i],Polymers$Release[i]), na.rm=TRUE)
+  }
+}
+
+write.csv(Polymers, file=file("FCCMigex_LitChem_PlasticMap_checked_compiled_f.csv"), row.names=FALSE)
+
+#Manually check Release, Extract and Potential use and manually corrected some errors in PET and HIPS for extraction.  
+
+```
+
+##5. MERGING POLYMERS & HAZARDS
+```{r}
+Pol = read.csv (file.choose(),sep=",")#file: FCCmigex_LitChem_PlasticMap_20231026.csv -> is the updated vs of FCCmigex_LitChem_PlasticMap_checked_compiled_f (sheet corrected: date 26.10.2023)
+nrow(Pol)
+ncol(Pol)
+View(Pol)
+names(Pol)
+
+PBMT = read.csv (file.choose(), sep=",")#file: PBMT_all_information_231006.csv
+nrow(PBMT)
+ncol(PBMT)
+View(PBMT)
+names(PBMT)
+
+#Merge 
+Pol_PBMT = merge(Pol, PBMT, by="CAS", all =T)
+nrow(Pol_PBMT)
+ncol(Pol_PBMT)
+
+write.csv(Pol_PBMT,"Polymers_hazards_20231026.csv",row.names=FALSE)
+
+#include plastchemID
+Polymers_db = read.csv (file.choose(), sep=",")#file: Polymers_hazards_20231026.csv
+nrow(Polymers_db)
+ncol(Polymers_db)
+View(Polymers_db)
+names(Polymers_db)
+
+plastchemID = read.csv (file.choose(), sep=",")#plastchem_ID.csv
+nrow(plastchemID)
+ncol(plastchemID)
+View(plastchemID)
+names(plastchemID)
+
+Pol_ID = merge(Polymers_db, plastchemID, by="CAS", all =T)
+nrow(Pol_ID)
+ncol(Pol_ID)
+
+write.csv(Pol_ID,"Polymers_hazards_20231026_IDs.csv",row.names=FALSE)
+
+```
+```{r}
+Pol = read.csv (file.choose(),sep=",")#
+nrow(Pol)
+View(Pol)
+
+Pol2 = read.csv (file.choose(),sep=",")#
+nrow(Pol2)
+View(Pol2)
+
+Pol_conflicts = read.csv (file.choose(),sep=",")#FCCmigex_LitChem_PlasticMap_20231026.csv
+nrow(Pol_conflicts)
+View(Pol_conflicts)
+
+Pol3 = read.csv (file.choose(),sep=",")#FCCmigex_LitChem_PlasticMap_20231026.csv
+nrow(Pol3)
+View(Pol3)
+```
+
