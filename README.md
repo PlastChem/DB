@@ -2,9 +2,10 @@
 
 > Identifying and addressing chemicals and polymers of concern
 
-<span style="color: red;">This repository will be continuously updated with all 
-code that was used to create the PlastChem DB after the launch of the PlastChem 
-report on 2023-03-14.</span>
+<span style="color: red;">This repository contains all the code that was used 
+to create the a beta version for the PlastChem DB. This beta version has then 
+been manually curated to create version 1.00 which was included as part of the 
+launch of the PlastChem report on 2023-03-14.</span>
 
 The [PlastChem](https://zenodo.org/records/10701706) database was assembled from 
 the raw data of seven data sets. Five are openly available and this repository 
